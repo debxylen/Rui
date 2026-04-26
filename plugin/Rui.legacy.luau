@@ -14,7 +14,7 @@ local SERVER_CLEANUP_NAME = "__RUI_PREVIEW_CLEANUP"
 local RUI_MODULE_FILENAMES = { "core.luau", "rui.luau", "runtime.luau", "xml.luau", "std.luau", "inliner.luau" }
 local RUI_RAW_BASE_URL = "https://raw.githubusercontent.com/debxylen/Rui/refs/heads/main/lib/"
 
-local RUI_MODULE = RS:WaitForChild("Rui"):WaitForChild("rui")
+local RUI_MODULE = nil
 
 local TEMP_FOLDER = RS:FindFirstChild("__RUI_TEMP") or Instance.new("Folder")
 TEMP_FOLDER.Name = "__RUI_TEMP"
@@ -27,6 +27,17 @@ local function print(...) if DEBUG then _print(...) end end
 local reloading = false
 local previewHandles = {}
 local autoCompileEnabled = true
+local initialized = false
+
+local function resolveRuiModule()
+	local ruiFolder = RS:FindFirstChild("Rui")
+	local ruiModule = ruiFolder and ruiFolder:FindFirstChild("rui")
+
+	if ruiModule and ruiModule:IsA("ModuleScript") then RUI_MODULE = ruiModule
+	else RUI_MODULE = nil end
+
+	return RUI_MODULE
+end
 
 local function safeRequire(module)
 	local appRoot = module.Parent
@@ -72,6 +83,8 @@ local function freshRequireRui(ruiModule)
 end
 
 local function reloadRui(async)
+	if not resolveRuiModule() then return end
+
 	if reloading then return end
 	reloading = true
 
@@ -112,8 +125,6 @@ local function mountPreview(compiledModule, ruiInstance)
 	previewHandles[compiledModule.Name] = handle
 	print("[Rui] Preview mounted:", compiledModule.Name)
 end
-
-reloadRui(false)
 
 -- ——— folders ————————————————————————————————————————————
 
@@ -213,10 +224,10 @@ end
 -- ——— compiles ———————————————————————————————————————————
 
 local function compileApp(appModule)
-	local ruiFolder = RS:FindFirstChild("Rui", true)
-	if not ruiFolder then error("Could not find Rui folder") end
+	local ruiModule = resolveRuiModule()
+	if not ruiModule then error("[Rui] Rui is not installed") end
 
-	local successfulRui = freshRequireRui(ruiFolder:FindFirstChild("rui"))
+	local successfulRui = freshRequireRui(ruiModule)
 
 	local ok, result = pcall(function()
 		local appTable = safeRequire(appModule)
@@ -256,6 +267,8 @@ end
 
 local compiling = false
 local function scheduleCompile()
+	if not resolveRuiModule() then return end
+
 	if not autoCompileEnabled then return end
 	if compiling then return end
 	compiling = true
@@ -307,6 +320,7 @@ local function install()
 	getOutputFolder()
 	ensureBootstrap()
 	ensureServerCleanup()
+	resolveRuiModule()
 end
 
 -- ——— plugin ui ——————————————————————————————————————————
@@ -400,8 +414,11 @@ title.TextSize = 16
 
 local statusLabel = makeLabel("", 36, Color3.fromRGB(180, 190, 205))
 local autoCompileButton
+local compileAllButton
+local init
 
 local function refreshUi()
+	local ruiInstalled = resolveRuiModule() ~= nil
 	local apps = {}
 	for _, child in ipairs(getAppsFolder():GetChildren()) do
 		if child:IsA("ModuleScript") then
@@ -412,27 +429,38 @@ local function refreshUi()
 	if autoCompileButton then
 		autoCompileButton.Text = autoCompileEnabled and "Auto-Compile: ON" or "Auto-Compile: OFF"
 		autoCompileButton.BackgroundColor3 = autoCompileEnabled and Color3.fromRGB(56, 92, 63) or Color3.fromRGB(92, 62, 56)
+		autoCompileButton.Active = ruiInstalled
+		autoCompileButton.AutoButtonColor = ruiInstalled
+		autoCompileButton.TextTransparency = ruiInstalled and 0 or 0.45
 	end
 
-	statusLabel.Text = "Apps (" .. #apps .. "): " .. table.concat(apps, ", ")
+	if compileAllButton then
+		compileAllButton.Active = ruiInstalled
+		compileAllButton.AutoButtonColor = ruiInstalled
+		compileAllButton.TextTransparency = ruiInstalled and 0 or 0.45
+	end
+
+	local prefix = ruiInstalled and "" or "Rui is not installed. "
+	statusLabel.Text = prefix .. "Apps (" .. #apps .. "): " .. table.concat(apps, ", ")
 end
 
 makeButton("Install", "Install Rui", Color3.fromRGB(53, 78, 118), function()
 	install()
+	init()
 	refreshUi()
 end)
 
 autoCompileButton = makeButton("AutoCompile", "", Color3.fromRGB(56, 92, 63), function()
+	if not resolveRuiModule() then return end
 	autoCompileEnabled = not autoCompileEnabled
 	refreshUi()
 end)
 
-makeButton("CompileAll", "Compile All Apps", Color3.fromRGB(78, 62, 118), function()
+compileAllButton = makeButton("CompileAll", "Compile All Apps", Color3.fromRGB(78, 62, 118), function()
+	if not resolveRuiModule() then return end
 	compileAll()
 	refreshUi()
 end)
-
-refreshUi()
 
 openButton.Click:Connect(function()
 	widget.Enabled = not widget.Enabled
@@ -466,49 +494,62 @@ end
 
 -- ——— init ———————————————————————————————————————————————
 
-local appsFolder = getAppsFolder()
-local ruiFolder = RUI_MODULE.Parent
+function init()
+	if initialized then return end
+	if not resolveRuiModule() then refreshUi(); return end
 
-for _, child in ipairs(appsFolder:GetChildren()) do
-	if child:IsA("ModuleScript") then
-		hookAppModule(child)
+	initialized = true
+
+	reloadRui(false)
+	refreshUi()
+
+	local appsFolder = getAppsFolder()
+	local ruiFolder = RUI_MODULE.Parent
+
+	for _, child in ipairs(appsFolder:GetChildren()) do
+		if child:IsA("ModuleScript") then
+			hookAppModule(child)
+		end
 	end
+
+	for _, child in ipairs(appsFolder:GetDescendants()) do
+		if child:IsA("ModuleScript") then
+			hookAppModule(child)
+		end
+	end
+
+	appsFolder.ChildAdded:Connect(function(child)
+		if child:IsA("ModuleScript") then
+			hookAppModule(child)
+			scheduleCompile()
+		end
+	end)
+
+	appsFolder.DescendantAdded:Connect(function(child)
+		if child:IsA("ModuleScript") then
+			hookAppModule(child)
+			scheduleCompile()
+		end
+	end)
+
+	for _, child in ipairs(ruiFolder:GetChildren()) do
+		if child:IsA("ModuleScript") then
+			hookRuiModule(child)
+		end
+	end
+
+	ruiFolder.ChildAdded:Connect(function(child)
+		if child:IsA("ModuleScript") then
+			hookRuiModule(child)
+		end
+	end)
+
+	ensureBootstrap()
+	ensureServerCleanup()
+	compileAll()
+
+	print("[Rui] Compiler running")
 end
 
-for _, child in ipairs(appsFolder:GetDescendants()) do
-	if child:IsA("ModuleScript") then
-		hookAppModule(child)
-	end
-end
-
-appsFolder.ChildAdded:Connect(function(child)
-	if child:IsA("ModuleScript") then
-		hookAppModule(child)
-		scheduleCompile()
-	end
-end)
-
-appsFolder.DescendantAdded:Connect(function(child)
-	if child:IsA("ModuleScript") then
-		hookAppModule(child)
-		scheduleCompile()
-	end
-end)
-
-for _, child in ipairs(ruiFolder:GetChildren()) do
-	if child:IsA("ModuleScript") then
-		hookRuiModule(child)
-	end
-end
-
-ruiFolder.ChildAdded:Connect(function(child)
-	if child:IsA("ModuleScript") then
-		hookRuiModule(child)
-	end
-end)
-
-ensureBootstrap()
-ensureServerCleanup()
-compileAll()
-
-print("[Rui] Compiler running")
+init()
+refreshUi()
