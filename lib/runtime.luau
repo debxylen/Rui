@@ -1,5 +1,7 @@
 return [=[
 
+-- ——— bundle ————————————————————————————————————————————
+
 local app = (__RUI_INLINE_APP_FACTORY__)()
 if type(app) ~= "table" then error("[Rui] App module must return a table") end
 

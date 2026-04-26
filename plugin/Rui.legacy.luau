@@ -11,7 +11,7 @@ local APPS_FOLDER_NAME = "RuiApp"
 local OUTPUT_FOLDER_NAME = "__RUI_COMPILED"
 local BOOTSTRAP_NAME = "__RUI_BOOTSTRAP"
 local SERVER_CLEANUP_NAME = "__RUI_PREVIEW_CLEANUP"
-local RUI_MODULE_FILENAMES = { "core.luau", "rui.luau", "runtime.luau", "xml.luau", "std.luau" }
+local RUI_MODULE_FILENAMES = { "core.luau", "rui.luau", "runtime.luau", "xml.luau", "std.luau", "inliner.luau" }
 local RUI_RAW_BASE_URL = "https://raw.githubusercontent.com/debxylen/Rui/refs/heads/main/lib/"
 
 local RUI_MODULE = RS:WaitForChild("Rui"):WaitForChild("rui")
@@ -29,11 +29,23 @@ local previewHandles = {}
 local autoCompileEnabled = true
 
 local function safeRequire(module)
-	local clone = module:Clone()
-	clone.Parent = TEMP_FOLDER
+	local appRoot = module.Parent
+	local package = Instance.new("Folder")
+
+	package.Name = "__APP_" .. module.Name
+	package.Parent = TEMP_FOLDER
+
+	for _, child in ipairs(appRoot:GetChildren()) do
+		child:Clone().Parent = package end
+
+	local clone = package:FindFirstChild(module.Name)
+	if not clone or not clone:IsA("ModuleScript") then
+		package:Destroy()
+		error("Failed to clone Rui app module")
+	end
 
 	local ok, result = pcall(require, clone)
-	clone:Destroy()
+	package:Destroy()
 
 	if not ok then
 		error(result) end
@@ -428,7 +440,12 @@ end)
 
 -- ——— hooks ——————————————————————————————————————————————
 
+local hookedAppModules = {}
+
 local function hookAppModule(mod)
+	if hookedAppModules[mod] then return end
+	hookedAppModules[mod] = true
+
 	mod.Changed:Connect(function(prop)
 		if prop == "Source" then
 			print("[Rui] App changed:", mod.Name)
@@ -458,7 +475,20 @@ for _, child in ipairs(appsFolder:GetChildren()) do
 	end
 end
 
+for _, child in ipairs(appsFolder:GetDescendants()) do
+	if child:IsA("ModuleScript") then
+		hookAppModule(child)
+	end
+end
+
 appsFolder.ChildAdded:Connect(function(child)
+	if child:IsA("ModuleScript") then
+		hookAppModule(child)
+		scheduleCompile()
+	end
+end)
+
+appsFolder.DescendantAdded:Connect(function(child)
 	if child:IsA("ModuleScript") then
 		hookAppModule(child)
 		scheduleCompile()

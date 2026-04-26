@@ -12,6 +12,7 @@ Rui takes a declarative UI written in LuaXML[^1] and compiles it into Luau, with
 - in-studio edit mode execution previews
 - a compiled, lightweight runtime
 - standalone compiled outputs
+- multi-file projects bundled
 - responsive layout engine
 - scoped loops
 - transition presets
@@ -29,7 +30,7 @@ The [Rui Plugin](https://create.roblox.com/store/asset/124163949816589) is the i
 * `lib/xml.luau`: XML parser
 * `lib/runtime.luau`: runtime helpers
 * `plugin/Rui.legacy.luau`: studio plugin
-* `examples/`: some examples (TBD)
+* `examples/`: some examples
 * `ARCHITECTURE.md`: compiler/runtime flow
 
 **Example**
