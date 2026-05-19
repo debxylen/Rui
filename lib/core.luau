@@ -100,7 +100,9 @@ local function parse_props(node)
 
 		elseif EVENT_MAP[k]       then props[k]     = is_luaexpr(v) and parse_expr(v) or v
 		elseif k == "id"          then props.__id   = v
-		elseif k == "name"        then props.__name = v
+		elseif k == "name"        then
+			if is_luaexpr(v) then props.__runtimeName = parse_expr(v)
+			else props.__name = v end
 
 		elseif startswith(k, "__") then -- internal metadata, ignore(?)
 		elseif startswith(k, "on") then error("[Rui] Unsupported event: " .. tostring(k))
