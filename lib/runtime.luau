@@ -266,7 +266,7 @@ end
 
 function invokeAction(name, scope, payload, event)
 	local handler = actions[name]
-	if handler then handler(buildHandlerContext(nil, payload, scope, event))
+	if handler then return handler(buildHandlerContext(nil, payload, scope, event))
 	else warn("Missing action: " .. tostring(name)) end
 end
 
