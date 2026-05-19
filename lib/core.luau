@@ -2,24 +2,29 @@ local M   = {} :: any
 local std = require(script.Parent.std)
 
 local append, extend, strip, lower, str, charAt = std.append, std.extend, std.strip, std.lower, std.str, std.charAt
-local startswith, endswith               = std.startswith, std.endswith
+local startswith, endswith = std.startswith, std.endswith
 
 local EVENT_MAP = {
-	onClick             = "Activated",
-	onInputBegan        = "InputBegan",
-	onInputChanged      = "InputChanged",
-	onInputEnded        = "InputEnded",
-	onMouseEnter        = "MouseEnter",
-	onMouseLeave        = "MouseLeave",
-	onMouseMoved        = "MouseMoved",
-	onSelectionGained   = "SelectionGained",
-	onSelectionLost     = "SelectionLost",
-	onTouchTap          = "TouchTap",
-	onMouseButton1Click = "MouseButton1Click",
-	onMouseButton1Down  = "MouseButton1Down",
-	onMouseButton1Up    = "MouseButton1Up",
-	onFocused           = "Focused",
-	onFocusLost         = "FocusLost",
+	onClick              = "Activated",
+	onInputBegan         = "InputBegan",
+	onInputChanged       = "InputChanged",
+	onInputEnded         = "InputEnded",
+	onMouseEnter         = "MouseEnter",
+	onMouseLeave         = "MouseLeave",
+	onMouseMoved         = "MouseMoved",
+	onMouseWheelForward  = "MouseWheelForward",
+	onMouseWheelBackward = "MouseWheelBackward",
+	onSelectionGained    = "SelectionGained",
+	onSelectionLost      = "SelectionLost",
+	onTouchTap           = "TouchTap",
+	onMouseButton1Click  = "MouseButton1Click",
+	onMouseButton1Down   = "MouseButton1Down",
+	onMouseButton1Up     = "MouseButton1Up",
+	onMouseButton2Click  = "MouseButton2Click",
+	onMouseButton2Down   = "MouseButton2Down",
+	onMouseButton2Up     = "MouseButton2Up",
+	onFocused            = "Focused",
+	onFocusLost          = "FocusLost",
 }
 
 local ALLOWED_RAWPROPS = {
