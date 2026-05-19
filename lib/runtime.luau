@@ -302,6 +302,16 @@ end
 
 -- ——— render lifecycle ——————————————————————————————————
 
+if type(app.init) == "function" then
+	app.init({
+		state    = state,
+		setState = setState,
+		dispatch = dispatch,
+		navigate = navigate,
+		getById  = getById,
+	})
+end
+
 function updateComputed(binding)
 	if not binding.instance then return end
 	local ok, val = pcall(binding.computer, binding.scope)
