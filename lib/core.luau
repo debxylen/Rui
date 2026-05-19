@@ -991,7 +991,7 @@ local function append_footer(lua, root_vars)
 	lua = lua .. [[
 
 local Players = game:GetService("Players")
-local player = Players.LocalPlayer
+local RunService = game:GetService("RunService")
 
 local previewName = "__RUI_PREVIEW"
 local runtimeName = "__RUI_GUI"
@@ -1001,8 +1001,8 @@ if script and script.Name then
     runtimeName = "__RUI_GUI_" .. script.Name
 end
 
-if player then
-    local playerGui = player:WaitForChild("PlayerGui")
+if RunService:IsRunning() then
+    local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
     local runtimeRoot = playerGui:FindFirstChild(runtimeName)
 
     if runtimeRoot then runtimeRoot:Destroy() end
