@@ -250,29 +250,29 @@ function navigate(routeName)
 	setState("route", routeName)
 end
 
-local function buildHandlerContext(instance, payload, scope)
+local function buildHandlerContext(instance, payload, scope, event)
 	return {
-		instance = instance, payload = payload, scope = scope,
+		instance = instance, payload = payload, scope = scope, event = event,
 		state = state, setState = setState, dispatch = dispatch,
 		navigate = navigate, getById = getById
 	}
 end
 
-function dispatch(name, payload, instance, scope)
+function dispatch(name, payload, instance, scope, event)
 	local handler = actions[name]
-	if handler then handler(buildHandlerContext(instance, payload, scope))
+	if handler then handler(buildHandlerContext(instance, payload, scope, event))
 	else warn("Missing action: " .. tostring(name)) end
 end
 
-function invokeAction(name, scope, payload)
+function invokeAction(name, scope, payload, event)
 	local handler = actions[name]
-	if handler then handler(buildHandlerContext(nil, payload, scope))
+	if handler then handler(buildHandlerContext(nil, payload, scope, event))
 	else warn("Missing action: " .. tostring(name)) end
 end
 
-function runAction(spec, instance, scope)
+function runAction(spec, instance, scope, event)
 	local colon = string.find(spec, ":", 1, true)
-	if not colon then dispatch(spec, nil, instance, scope); return end
+	if not colon then dispatch(spec, nil, instance, scope, event); return end
 
 	local name = string.sub(spec, 1, colon - 1)
 	local rest = string.sub(spec, colon + 1)
@@ -282,15 +282,15 @@ function runAction(spec, instance, scope)
 	if s2 then a, b = string.sub(rest, 1, s2 - 1), string.sub(rest, s2 + 1) end
 
 	if     name == "navigate" then navigate(a)
-	elseif name == "dispatch" then dispatch(a, nil, instance, scope)
+	elseif name == "dispatch" then dispatch(a, nil, instance, scope, event)
 	elseif name == "toggle"   then setState(a, not state[a])
 	elseif name == "set"      then setState(a, coerceActionValue(b))
-	else dispatch(spec, nil, instance, scope) end
+	else dispatch(spec, nil, instance, scope, event) end
 end
 
 function bindEvent(instance, prop, signalName, handlerName, scope)
 	local ok, signal = pcall(function() return instance[signalName] end)
-	if ok and signal then signal:Connect(function() runAction(handlerName, instance, scope) end)
+	if ok and signal then signal:Connect(function(...) runAction(handlerName, instance, scope, ...) end)
 	else warn(prop .. " requires signal " .. signalName .. " on " .. instance.ClassName) end
 end
 

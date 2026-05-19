@@ -543,7 +543,7 @@ local function compile_func(code, indent, scope_var, statement, suffix, scope_lo
 	local fn_var = suffix .. "_" .. tostring(idc + 1)
 	idc += 1
 
-	local lines = { indent .. "local " .. fn_var .. " = function(_scope)" }
+	local lines = { indent .. "local " .. fn_var .. " = function(_scope, _event)" }
 	if scope_var ~= nil then append(lines, indent .. "    local scope = _scope or " .. scope_var)
 	else append(lines, indent .. "    local scope = _scope")
 	end
@@ -555,7 +555,7 @@ local function compile_func(code, indent, scope_var, statement, suffix, scope_lo
 
 	for _, name in ipairs(action_names) do
 		if uses_identifier(code, name) then
-			append(lines, indent .. "    local " .. name .. " = function(...) return invokeAction(" .. str(name) .. ", scope, ...) end") end
+			append(lines, indent .. "    local " .. name .. " = function(_payload) return invokeAction(" .. str(name) .. ", scope, _payload, _event) end") end
 	end
 	
 	if uses_identifier(code, "getById") then
