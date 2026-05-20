@@ -30,6 +30,8 @@ local EVENT_MAP = {
 local ALLOWED_RAWPROPS = {
 	IgnoreGuiInset = true,
 	Active = true,
+	LayoutOrder = true,
+	GroupTransparency = true,
 }
 
 -- ——— parsing helpers —————————————————————————————————————

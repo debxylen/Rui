@@ -107,10 +107,15 @@ local function getTransitionGoals(instance, preset)
 	local okBg,   bg   = pcall(function() return instance.BackgroundTransparency end)
 	local okText, text = pcall(function() return instance.TextTransparency end)
 	local okPos,  pos  = pcall(function() return instance.Position end)
+	local okGrp,  grp  = pcall(function() return instance.GroupTransparency end)
 
 	if preset:match("^fade") or preset == "modal" or preset == "toast" then
-		if okBg then   setPair("BackgroundTransparency", bg, 1) end
-		if okText then setPair("TextTransparency", text, 1) end
+		if okGrp then
+			setPair("GroupTransparency", grp, 1)
+		else
+			if okBg then   setPair("BackgroundTransparency", bg, 1) end
+			if okText then setPair("TextTransparency", text, 1) end
+		end
 	end
 
 	if preset == "slideUp" or preset == "modal" then
@@ -141,6 +146,24 @@ local function collectTransitionTargets(roots)
 	return targets
 end
 
+-- fade all painted children alongside the root, cuz idk why it wont do that itself even in canvasgroup
+local function tweenDescendants(root, tweenInfo, alpha)
+	local function visit(ins)
+		if not ins:IsA("GuiObject") then return end
+		local goals = {}
+
+		local okBg, _ = pcall(function() return ins.BackgroundTransparency end)
+		if okBg and ins.BackgroundTransparency < 1 then goals.BackgroundTransparency = alpha end
+
+		local okTx, _ = pcall(function() return ins.TextTransparency end)
+		if okTx then goals.TextTransparency = alpha end
+
+		if next(goals) then TweenService:Create(ins, tweenInfo, goals):Play() end
+		for _, c in ipairs(ins:GetChildren()) do visit(c) end
+	end
+	for _, c in ipairs(root:GetChildren()) do visit(c) end
+end
+
 function playEnterTransitions(roots)
 	for _, ins in ipairs(collectTransitionTargets(roots)) do
 		local cfg         = transitionInfos[ins]
@@ -164,6 +187,8 @@ function playExitTransitions(roots, onDone)
 			played  = true
 			maxTime = math.max(maxTime, cfg.tweenInfo.Time)
 			TweenService:Create(ins, cfg.tweenInfo, exit):Play()
+			local isFade = cfg.preset:match("^fade") or cfg.preset == "modal" or cfg.preset == "toast"
+			if isFade then tweenDescendants(ins, cfg.tweenInfo, 1) end
 		end
 	end
 
