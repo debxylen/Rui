@@ -32,6 +32,7 @@ local ALLOWED_RAWPROPS = {
 	Active = true,
 	LayoutOrder = true,
 	GroupTransparency = true,
+	ResetOnSpawn = true,
 }
 
 -- ——— parsing helpers —————————————————————————————————————
@@ -997,49 +998,30 @@ local function append_footer(lua, root_vars)
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
-local previewName = "__RUI_PREVIEW"
-local runtimeName = "__RUI_GUI"
-
-if script and script.Name then
-    previewName = "__RUI_PREVIEW_" .. script.Name
-    runtimeName = "__RUI_GUI_" .. script.Name
-end
-
 if RunService:IsRunning() then
     local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
-    local runtimeRoot = playerGui:FindFirstChild(runtimeName)
+    runtimeRoot = playerGui
 
-    if runtimeRoot then runtimeRoot:Destroy() end
-
-    runtimeRoot = Instance.new("Folder")
-    runtimeRoot.Name = runtimeName
-    runtimeRoot.Parent = playerGui
-
-__ROOT_PARENTS_PLAYERGUI__
+	__ROOT_PARENTS_PLAYERGUI__
 
 else
     local starterGui = game:GetService("StarterGui")
-    local previewRoot = starterGui:FindFirstChild(previewName)
+    previewRoot = starterGui
 
-    if previewRoot then previewRoot:Destroy() end
-
-    previewRoot = Instance.new("Folder")
-    previewRoot.Name = previewName
-    previewRoot.Parent = starterGui
-
-__ROOT_PARENTS_PREVIEW__
+	__ROOT_PARENTS_PREVIEW__
 
 end
 
-return {
-__ROOT_RETURN_VALUES__
-}
+return { __ROOT_RETURN_VALUES__ }
 ]]
 
 	local lines_playergui = {}
 	local lines_preview = {}
 	for _, name in ipairs(root_vars) do
+		append(lines_playergui, name .. '.Name = "__RUI_RUNTIME_" .. ' .. name .. '.Name')
 		append(lines_playergui, name .. ".Parent = runtimeRoot")
+
+		append(lines_preview, name .. '.Name = "__RUI_PREVIEW_" .. ' .. name .. '.Name')
 		append(lines_preview, name .. ".Parent = previewRoot")
 	end
 

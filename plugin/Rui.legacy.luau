@@ -191,18 +191,8 @@ local function ensureServerCleanup()
 
 	local source = [[
 local starterGui = game:GetService("StarterGui")
-
-local function cleanup(child)
-	if string.match(child.Name, "^__RUI_PREVIEW_") then
-		child:Destroy()
-	end
-end
-
-for _, child in ipairs(starterGui:GetChildren()) do
-	cleanup(child)
-end
-
-starterGui.ChildAdded:Connect(cleanup)
+local existing = starterGui:FindFirstChild("__RUI_PREVIEW_" .. guiName)
+if existing then existing:Destroy() end		
 ]]
 
 	if existing then
