@@ -1,4 +1,4 @@
-local DEBUG = false
+local DEBUG = plugin:GetSetting("RUI_DEBUG") or false
 
 local RunService = game:GetService("RunService")
 if not RunService:IsStudio() then return end
@@ -12,7 +12,7 @@ local OUTPUT_FOLDER_NAME = "__RUI_COMPILED"
 local BOOTSTRAP_NAME = "__RUI_BOOTSTRAP"
 local SERVER_CLEANUP_NAME = "__RUI_PREVIEW_CLEANUP"
 local RUI_MODULE_FILENAMES = { "core.luau", "rui.luau", "runtime.luau", "xml.luau", "std.luau", "inliner.luau" }
-local RUI_RAW_BASE_URL = "https://raw.githubusercontent.com/debxylen/Rui/refs/heads/main/lib/"
+local RUI_RAW_BASE_URL = "https://raw.githubusercontent.com/debxylen/Rui/main/lib/"
 
 local RUI_MODULE = nil
 
@@ -169,10 +169,12 @@ for _, mod in ipairs(compiledFolder:GetChildren()) do
 end
 ]]
 
-	if existing then
-		if existing:IsA("LocalScript") and existing.Source ~= source then
+	if existing and existing:IsA("LocalScript") then
+		if existing.Source ~= source then
 			existing.Source = source
 			print("[Rui] Updated bootstrap")
+		else 
+			print("[Rui] Bootstrap already up to date")
 		end
 		return
 	end
@@ -191,14 +193,20 @@ local function ensureServerCleanup()
 
 	local source = [[
 local starterGui = game:GetService("StarterGui")
-local existing = starterGui:FindFirstChild("__RUI_PREVIEW_" .. guiName)
-if existing then existing:Destroy() end		
+
+for _, child in ipairs(starterGui:GetChildren()) do
+	if child.Name:match("^__RUI_PREVIEW_") then
+		child:Destroy()
+	end
+end	
 ]]
 
-	if existing then
-		if existing:IsA("Script") and existing.Source ~= source then
+	if existing and existing:IsA("Script") then
+		if existing.Source ~= source then
 			existing.Source = source
 			print("[Rui] Updated preview cleanup")
+		else
+			print("[Rui] Preview cleanup already up to date")
 		end
 		return
 	end
@@ -272,6 +280,8 @@ end
 -- ——— rui setups —————————————————————————————————————————
 
 local function install()
+	print("[Rui] Installing...")
+	
 	local ruiFolder = RS:FindFirstChild("Rui")
 	if not ruiFolder then
 		ruiFolder = Instance.new("Folder")
@@ -415,6 +425,11 @@ local function refreshUi()
 			table.insert(apps, child.Name)
 		end
 	end
+	
+	if debugButton then
+		debugButton.Text = DEBUG and "Debug: ON" or "Debug: OFF"
+		debugButton.BackgroundColor3 = Color3.fromRGB(48, 48, 52)
+	end
 
 	if autoCompileButton then
 		autoCompileButton.Text = autoCompileEnabled and "Auto-Compile: ON" or "Auto-Compile: OFF"
@@ -433,6 +448,12 @@ local function refreshUi()
 	local prefix = ruiInstalled and "" or "Rui is not installed. "
 	statusLabel.Text = prefix .. "Apps (" .. #apps .. "): " .. table.concat(apps, ", ")
 end
+
+debugButton = makeButton("Debug", "", Color3.fromRGB(80, 80, 80), function()
+	DEBUG = not DEBUG
+	plugin:SetSetting("RUI_DEBUG", DEBUG)
+	refreshUi()
+end)
 
 makeButton("Install", "Install Rui", Color3.fromRGB(53, 78, 118), function()
 	install()
