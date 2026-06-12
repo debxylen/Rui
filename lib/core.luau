@@ -81,15 +81,82 @@ local LAYOUT_KEYS     = { direction = "direction", gap = "gap", padding = "paddi
 local TWEEN_KEYS      = { tweenTime = "time", tweenStyle = "style", tweenDirection = "direction" }
 local TRANSITION_KEYS = { transition = "preset", transitionTime = "time", transitionStyle = "style", transitionDirection = "direction" }
 
+-- ——— stylesheets —————————————————————————————————————
+
+local function parse_stylesheet(css_str)
+	local rules = {}
+	if not css_str or css_str == "" then return rules end
+	css_str = string.gsub(css_str, "/%*.-%*/", "")
+
+	for selectors, block in string.gmatch(css_str, "([^{]+)%s*{(.-)}") do
+		local props = {}
+
+		for name, val in string.gmatch(block, "([%w%-]+)%s*:%s*([^;}]+)") do
+			props[strip(name)] = strip(val) end
+
+		for selector in string.gmatch(selectors, "([^,]+)") do
+			selector = strip(selector)
+			if selector ~= "" then append(rules, { selector = selector, props = props }) end
+		end
+	end
+
+	return rules
+end
+
+local function matches_selector(node, selector)
+	if selector == "*" then return true end
+	if node.tag == selector then return true end
+
+	if startswith(selector, ".") then
+		local target = string.sub(selector, 2)
+		local class_attr = node.attrib.class or node.attrib.className
+		if not class_attr then return false end
+
+		for cls in string.gmatch(class_attr, "%S+") do
+			if cls == target then return true end end
+	end
+
+	return false
+end
+
+local function specificity(selector)
+	if selector == "*" then return 0 end
+	if startswith(selector, ".") then return 2 end
+	return 1
+end
+
+local function apply_stylesheet(node, rules)
+	local attribs = {}
+	local prop_specs = {}
+
+	for _, rule in ipairs(rules) do
+		if not matches_selector(node, rule.selector) then continue end
+		local spec = specificity(rule.selector)
+
+		for k, v in pairs(rule.props) do
+			if spec < (prop_specs[k] or -1) then continue end
+			attribs[k] = v
+			prop_specs[k] = spec
+	end end
+
+	for k, v in pairs(node.attrib) do attribs[k] = v end
+	return attribs
+end
+
 -- ——— builds ——————————————————————————————————————————
 
-local function parse_props(node)
+local function parse_props(node, stylesheet_rules)
 	local props      = {}
 	local layout     = {}
 	local tween      = {}
 	local transition = {}
 
-	for k, v in pairs(node.attrib) do
+	local attribs = node.attrib
+	if stylesheet_rules then attribs = apply_stylesheet(node, stylesheet_rules) end
+
+	for k, v in pairs(attribs) do
+		if k == "class" or k == "className" then continue end
+
 		local setter = PROP_SETTERS[k]
 		if setter then props[setter[1]] = is_luaexpr(v) and parse_expr(v) or setter[2](v)
 
@@ -124,7 +191,7 @@ end
 local function build(node)
 	local obj = {
 		type     = node.tag,
-		props    = parse_props(node),
+		props    = parse_props(node, M._stylesheet_rules),
 		children = {},
 	}
 
@@ -1050,9 +1117,12 @@ function M.generate_from_app(app, runtime_text, xml_parser)
 	end
 	
 	M._xml_parser = xml_parser
+	M._stylesheet_rules = parse_stylesheet(app.stylesheet or app.css)
 
 	local src = preprocess_luaxml(load_uiapp(app))
 	local root = build(xml_parser.fromstring(src))
+
+	M._stylesheet_rules = nil
 	local lines, root_vars = compile_root(root)
 	local lua = table.concat(lines, "\n")
 
