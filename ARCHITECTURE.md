@@ -176,6 +176,10 @@
 
 * dynamic fragment system (runtime core)
 * `[parent, selector_fn, fragmentFactories, scope]`
+* tracks
+  `mounted`: currently live instances
+  `currentKey`: signature of the last rendered selection
+  `revision`: monotonic counter, bumped on every state change that alters the key
 
 * goto `selector_fn(scope)` -> returns fragment key(s)
 * goto `fragmentFactories[key]` -> builds UI
@@ -185,6 +189,18 @@ flow:
 * selector decides -> `"frag_0"` or `{key, scope}`
 * factory builds -> actual instances
 * mounts to parent
+
+**updateLuaBlock**
+
+* runs on state updates
+* compares new selector signature against `currentKey`
+
+flow:
+
+* `selector_fn(scope)` -> no-op or bump `revision`
+* `playExitTransitions(prev, cb)` -> animate + destroy previous ui
+* factories build -> `created` -> `mounted`
+* `playEnterTransitions(mounted)`
 
 **renderTemplate**
 
