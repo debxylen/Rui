@@ -72,28 +72,33 @@ end
 function setTweenInfo(instance, info)        tweenInfos[instance] = info end
 function setTransitionInfo(instance, p, i)   transitionInfos[instance] = { preset = p, tweenInfo = i } end
 
+local function tweenProperties(instance, tweenInfo, goals)
+	if not activeTweens[instance] then activeTweens[instance] = {} end
+	local active = activeTweens[instance]
+
+	for prop in pairs(goals) do
+		if active[prop] then active[prop]:Cancel() end end
+
+	local tween = TweenService:Create(instance, tweenInfo, goals)
+	for prop in pairs(goals) do active[prop] = tween end
+
+	tween.Completed:Connect(function()
+		for prop in pairs(goals) do
+			if active[prop] == tween then active[prop] = nil end end
+	end)
+
+	tween:Play()
+	return tween
+end
+
 local function applyPropertyValue(instance, prop, value)
 	local info = tweenInfos[instance]
-	if not info or not canTweenValue(value) then
-		instance[prop] = value
-		return
-	end
+	if not info or not canTweenValue(value) then instance[prop] = value; return end
 
 	local ok, current = pcall(function() return instance[prop] end)
-	if not ok or current == value then
-		instance[prop] = value
-		return
-	end
+	if not ok or current == value then instance[prop] = value; return end
 
-	local active   = activeTweens[instance] or {}
-	activeTweens[instance] = active
-
-	if active[prop] then active[prop]:Cancel() end
-
-	local tween    = TweenService:Create(instance, info, { [prop] = value })
-	active[prop]   = tween
-	tween.Completed:Connect(function() if active[prop] == tween then active[prop] = nil end end)
-	tween:Play()
+	tweenProperties(instance, info, { [prop] = value })
 end
 
 local function getTransitionGoals(instance, preset)
@@ -109,11 +114,10 @@ local function getTransitionGoals(instance, preset)
 	local okPos,  pos  = pcall(function() return instance.Position end)
 	local okGrp,  grp  = pcall(function() return instance.GroupTransparency end)
 
-	if preset:match("^fade") or preset == "modal" or preset == "toast" then
-		if okGrp then
-			setPair("GroupTransparency", grp, 1)
+	if preset == "fade" or preset == "modal" or preset == "toast" then
+		if okGrp then setPair("GroupTransparency", grp, 1)
 		else
-			if okBg then   setPair("BackgroundTransparency", bg, 1) end
+			if okBg   then setPair("BackgroundTransparency", bg, 1) end
 			if okText then setPair("TextTransparency", text, 1) end
 		end
 	end
@@ -158,7 +162,7 @@ local function tweenDescendants(root, tweenInfo, alpha)
 		local okTx, _ = pcall(function() return ins.TextTransparency end)
 		if okTx then goals.TextTransparency = alpha end
 
-		if next(goals) then TweenService:Create(ins, tweenInfo, goals):Play() end
+		if next(goals) then tweenProperties(ins, tweenInfo, goals) end
 		for _, c in ipairs(ins:GetChildren()) do visit(c) end
 	end
 	for _, c in ipairs(root:GetChildren()) do visit(c) end
@@ -170,7 +174,7 @@ function playEnterTransitions(roots)
 		local enter, exit = getTransitionGoals(ins, cfg.preset)
 		if enter then
 			for p, start in pairs(exit) do ins[p] = start end
-			TweenService:Create(ins, cfg.tweenInfo, enter):Play()
+			tweenProperties(ins, cfg.tweenInfo, enter)
 		end
 	end
 end
@@ -186,7 +190,7 @@ function playExitTransitions(roots, onDone)
 		if next(exit) then
 			played  = true
 			maxTime = math.max(maxTime, cfg.tweenInfo.Time)
-			TweenService:Create(ins, cfg.tweenInfo, exit):Play()
+			tweenProperties(ins, cfg.tweenInfo, exit)
 			local isFade = cfg.preset:match("^fade") or cfg.preset == "modal" or cfg.preset == "toast"
 			if isFade then tweenDescendants(ins, cfg.tweenInfo, 1) end
 		end
@@ -359,7 +363,6 @@ function updateLuaBlock(binding)
 
 	if prev and #prev > 0 then
 		playExitTransitions(prev, function()
-			if binding.revision ~= rev then return end
 			for _, ins in ipairs(prev) do if ins then ins:Destroy() end end
 		end)
 	end

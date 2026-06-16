@@ -54,7 +54,7 @@ end
 
 local function parse_scalar(value)
 	local l = lower(value)
-	if l == "true" or l == "false" or l == "1" or l == "0" or l == "yes" or l == "no" or l == "on" or l == "off" then return parse_bool(value) end
+	if l == "true" or l == "false" or l == "yes" or l == "no" or l == "on" or l == "off" then return parse_bool(value) end
 	if string.match(value, "^-?%d+$") then return tonumber(value) end
 	if string.match(value, "^-?%d+%.%d*$") or string.match(value, "^-?%d*%.%d+$") then return tonumber(value) end
 	return value
@@ -288,7 +288,7 @@ local function read_longbrack(text, start_pos)
 
 	local open_len      = i - start_pos + 1
 	local close_token   = "]" .. eqs .. "]"
-	
+
 	local content_start = start_pos + open_len
 	local content_end   = string.find(text, close_token, content_start, true)
 	if not content_end then error("Unclosed Lua long bracket string") end
@@ -541,7 +541,7 @@ local function extract_fragmentcalls(code)
 			elseif charAt(code, j) == '"' or charAt(code, j) == "'" then
 				local k = read_quotedstr(code, j)
 				if not k then error("Unclosed Fragment string in LuaBlock") end
-			
+
 				token = string.sub(code, j, k)
 				j = k + 1
 
@@ -577,7 +577,7 @@ local function extract_strliterals(code)
 		if ch == '"' or ch == "'" then
 			local j = read_quotedstr(code, i)
 			if not j then error("Unclosed Lua string literal in LuaBlock") end
-		
+
 			append(out, string.sub(code, i, j))
 			i = j + 1
 			continue
@@ -629,7 +629,7 @@ local function compile_func(code, indent, scope_var, statement, suffix, scope_lo
 		if uses_identifier(code, name) then
 			append(lines, indent .. "    local " .. name .. " = function(_payload) return invokeAction(" .. str(name) .. ", scope, _payload, _event) end") end
 	end
-	
+
 	if uses_identifier(code, "getById") then
 		append(lines, indent .. "    local getById = getById") end
 
@@ -697,7 +697,7 @@ end
 local function compile_rawprop(var, attr_name, value, indent, scope_var, scope_locals)
 	local lines     = {}
 	local prop_name = string.sub(attr_name, #"__rawprop__" + 1)
-	
+
 	if not ALLOWED_RAWPROPS[prop_name] then
 		append(lines, indent .. "warnUnknownAttribute(" .. str(attr_name) .. ", " .. str(prop_name) .. ")") end
 
@@ -907,7 +907,7 @@ function compile_block(node, parent_var, depth, scope_var, scope_locals)
 
 		local frag_scopelocals = frag_scopecaptures
 		if frag_scopelocals == nil or #frag_scopelocals == 0 then frag_scopelocals = scope_locals end
-		
+
 		local frag_lines, frag_roots = compile_fragchilds(frag.value, depth + 1, "fragmentScope", frag_scopelocals)
 
 		extend(lines, frag_lines)
@@ -959,6 +959,10 @@ function compile_node(node, depth, scope_var, scope_locals)
 		indent .. "local " .. var .. " = Instance.new(" .. str(node.type) .. ")",
 		indent .. var .. ".Name = " .. str(var)
 	}
+
+	if node.props.__runtimeName then
+		extend(lines, compile_computedprop(var, "Name", node.props.__runtimeName.code, indent, scope_var, scope_locals))
+	end
 
 	if node.type == "ScreenGui" then
 		append(lines, indent .. var .. ".ResetOnSpawn = false")
@@ -1115,15 +1119,15 @@ function M.generate_from_app(app, runtime_text, xml_parser)
 		end
 		table.sort(action_names)
 	end
-	
+
 	M._xml_parser = xml_parser
 	M._stylesheet_rules = parse_stylesheet(app.stylesheet or app.css)
 
 	local src = preprocess_luaxml(load_uiapp(app))
 	local root = build(xml_parser.fromstring(src))
 
-	M._stylesheet_rules = nil
 	local lines, root_vars = compile_root(root)
+	M._stylesheet_rules = nil
 	local lua = table.concat(lines, "\n")
 
 	lua = table.concat({
