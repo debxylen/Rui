@@ -6,6 +6,7 @@ if not RunService:IsStudio() then return end
 local CS = game:GetService("ChangeHistoryService")
 local HttpService = game:GetService("HttpService")
 local RS = game:GetService("ReplicatedStorage")
+local Selection = game:GetService("Selection")
 
 local APPS_FOLDER_NAME = "RuiApp"
 local OUTPUT_FOLDER_NAME = "__RUI_COMPILED"
@@ -234,6 +235,7 @@ local function compileApp(appModule)
 
 	if not ok then
 		warn("[Rui] Compile error in", appModule.Name, result)
+		warn("\n", debug.traceback())
 		return
 	end
 
@@ -503,6 +505,76 @@ local function hookRuiModule(mod)
 	end)
 end
 
+-- ——— selection sync ——————————————————————————————————————
+
+local selectionConnections = {}
+local selectionChangedConn
+
+local function onPropertyTweak(instance, propName)
+	local sourcePath = instance:GetAttribute("RuiSourceModule")
+	local elementName = instance:GetAttribute("RuiElementName")
+	if not sourcePath or not elementName then return end
+
+	local parts = string.split(sourcePath, ".")
+	local moduleScript = game
+	local startIdx = parts[1] == "game" and 2 or 1
+
+	for i = startIdx, #parts do
+		moduleScript = moduleScript:FindFirstChild(parts[i])
+		if not moduleScript then return end
+	end
+
+	if not moduleScript:IsA("ModuleScript") then return end
+
+	local newValue = instance[propName]
+	local newValueStr
+	if typeof(newValue) == "UDim2" then newValueStr = string.format("%g,%g", newValue.X.Scale, newValue.Y.Scale)
+	else return end
+
+	local source = moduleScript.Source
+	local attrLower = string.lower(propName)
+	local pattern = "(<[%w_]+%s+[^>]*name%s*=%s*[\"']" .. elementName .. "[\"'][^>]*>)"
+	local matchStart, matchEnd, tagContent = string.find(source, pattern)
+
+	if not tagContent then
+		pattern = "(<[%w_]+[^>]*name%s*=%s*[\"']" .. elementName .. "[\"'][^>]*>)"
+		matchStart, matchEnd, tagContent = string.find(source, pattern)
+		if not tagContent then return end
+	end
+
+	local newTagContent
+	local attrPattern = attrLower .. "%s*=%s*\"[^\"]*\""
+	local attrPatternSingle = attrLower .. "%s*=%s*'[^']*'"
+
+	local hasDouble = string.find(tagContent, attrPattern)
+	local hasSingle = string.find(tagContent, attrPatternSingle)
+
+	if hasDouble     then newTagContent = string.gsub(tagContent, attrPattern, attrLower .. '="' .. newValueStr .. '"', 1)
+	elseif hasSingle then newTagContent = string.gsub(tagContent, attrPatternSingle, attrLower .. "='" .. newValueStr .. "'", 1)
+
+	elseif string.sub(tagContent, -2) == "/>" then newTagContent = string.sub(tagContent, 1, -3) .. " " .. attrLower .. '="' .. newValueStr .. '" />'
+	elseif string.sub(tagContent, -1) == ">"  then newTagContent = string.sub(tagContent, 1, -2) .. " " .. attrLower .. '="' .. newValueStr .. '">' end
+
+	if newTagContent == tagContent then return end
+
+	local newSource = string.sub(source, 1, matchStart - 1) .. newTagContent .. string.sub(source, matchEnd + 1)
+	CS:SetWaypoint("Before UI tweak")
+	moduleScript.Source = newSource
+	CS:SetWaypoint("After UI tweak")
+end
+
+local function onSelectionChanged()
+	for _, conn in ipairs(selectionConnections) do conn:Disconnect() end
+	table.clear(selectionConnections)
+
+	for _, instance in ipairs(Selection:Get()) do
+		if instance:IsA("GuiObject") and instance:GetAttribute("RuiSourceModule") and instance:GetAttribute("RuiElementName") then
+			table.insert(selectionConnections, instance:GetPropertyChangedSignal("Position"):Connect(function() onPropertyTweak(instance, "Position") end))
+			table.insert(selectionConnections, instance:GetPropertyChangedSignal("Size"):Connect(function() onPropertyTweak(instance, "Size") end))
+		end
+	end
+end
+
 -- ——— init ———————————————————————————————————————————————
 
 function init()
@@ -558,6 +630,10 @@ function init()
 	ensureBootstrap()
 	ensureServerCleanup()
 	compileAll()
+
+	if not selectionChangedConn then
+		selectionChangedConn = Selection.SelectionChanged:Connect(onSelectionChanged) end
+	onSelectionChanged()
 
 	print("[Rui] Compiler running")
 end

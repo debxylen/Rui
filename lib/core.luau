@@ -178,6 +178,8 @@ local function parse_props(node, stylesheet_rules)
 			if is_luaexpr(v) then props.__runtimeName = parse_expr(v)
 			else props.__name = v end
 
+		elseif k == "__source_fragment" then props.__source_fragment = v
+
 		elseif startswith(k, "__") then -- internal metadata, ignore(?)
 		elseif startswith(k, "on") then error("[Rui] Unsupported event: " .. tostring(k))
 
@@ -731,20 +733,20 @@ local compile_node
 local group_comment
 -- / end forward declr
 
-local function compile_child(parent_var, child, depth, scope_var, scope_locals)
+local function compile_child(parent_var, child, depth, scope_var, scope_locals, current_component)
 	local indent = string.rep("    ", depth)
 
 	if child.type == "Fragment" then
 		local lines = {}
 		for _, grandchild in ipairs(child.children) do
-			extend(lines, compile_child(parent_var, grandchild, depth, scope_var, scope_locals))
+			extend(lines, compile_child(parent_var, grandchild, depth, scope_var, scope_locals, current_component))
 		end
 		return lines
 	end
 
-	if child.type == "LuaBlock" then return compile_block(child, parent_var, depth, scope_var, scope_locals) end
+	if child.type == "LuaBlock" then return compile_block(child, parent_var, depth, scope_var, scope_locals, current_component) end
 
-	local child_lines, child_var = compile_node(child, depth + 1, scope_var, scope_locals)
+	local child_lines, child_var = compile_node(child, depth + 1, scope_var, scope_locals, current_component)
 	append(child_lines, indent .. child_var .. ".Parent = " .. parent_var)
 	return child_lines
 end
@@ -872,7 +874,7 @@ local function compile_textbind(node, var, indent, scope_var, scope_locals)
 	return lines
 end
 
-function compile_block(node, parent_var, depth, scope_var, scope_locals)
+function compile_block(node, parent_var, depth, scope_var, scope_locals, current_component)
 	local indent = string.rep("    ", depth)
 	local key    = node.props.__luaBlockKey
 	if not key then return {} end
@@ -912,7 +914,7 @@ function compile_block(node, parent_var, depth, scope_var, scope_locals)
 		local frag_scopelocals = frag_scopecaptures
 		if frag_scopelocals == nil or #frag_scopelocals == 0 then frag_scopelocals = scope_locals end
 
-		local frag_lines, frag_roots = compile_fragchilds(frag.value, depth + 1, "fragmentScope", frag_scopelocals)
+		local frag_lines, frag_roots = compile_fragchilds(frag.value, depth + 1, "fragmentScope", frag_scopelocals, current_component)
 
 		extend(lines, frag_lines)
 		for _, root in ipairs(frag_roots) do append(lines, indent .. "    " .. root .. ".Parent = parent") end
@@ -925,7 +927,7 @@ function compile_block(node, parent_var, depth, scope_var, scope_locals)
 	return lines
 end
 
-function compile_fragchilds(fragment_src, depth, scope_var, scope_locals)
+function compile_fragchilds(fragment_src, depth, scope_var, scope_locals, current_component)
 	fragment_src = string.match(fragment_src, "^%s*(.-)%s*$") or ""
 	if fragment_src == "" then return {}, {} end
 
@@ -937,12 +939,12 @@ function compile_fragchilds(fragment_src, depth, scope_var, scope_locals)
 
 	if fragment_tree.type == "Fragment" then
 		for _, child in ipairs(fragment_tree.children) do
-			local child_lines, child_var = compile_node(child, depth, scope_var, scope_locals)
+			local child_lines, child_var = compile_node(child, depth, scope_var, scope_locals, current_component)
 			extend(lines, child_lines)
 			append(roots, child_var)
 		end
 	else
-		local child_lines, child_var = compile_node(fragment_tree, depth, scope_var, scope_locals)
+		local child_lines, child_var = compile_node(fragment_tree, depth, scope_var, scope_locals, current_component)
 		extend(lines, child_lines)
 		append(roots, child_var)
 	end
@@ -952,10 +954,13 @@ end
 
 -- ——— node compilation ————————————————————————————————————
 
-function compile_node(node, depth, scope_var, scope_locals)
+function compile_node(node, depth, scope_var, scope_locals, current_component)
 	depth        = depth or 0
 	local indent = string.rep("    ", depth)
 	local var    = alloc_name(node, node.type)
+
+	if node.props.__source_fragment then
+		current_component = node.props.__source_fragment end
 
 	local lines = {
 		"",
@@ -1006,8 +1011,23 @@ function compile_node(node, depth, scope_var, scope_locals)
 	if node.props.__id then
 		append(lines, indent .. "registerElementId(" .. str(node.props.__id) .. ", " .. var .. ")") end
 
+	if node.props.__name and M._app_module then
+		local source_module = M._app_module
+
+		if current_component then
+			local target = string.lower(current_component)
+
+			for _, desc in ipairs(source_module.Parent:GetDescendants()) do
+				if desc:IsA("ModuleScript") and string.lower(desc.Name) == target then
+					source_module = desc; break
+		end end end
+
+		append(lines, indent .. var .. ':SetAttribute("RuiElementName", ' .. str(node.props.__name) .. ')')
+		append(lines, indent .. var .. ':SetAttribute("RuiSourceModule", ' .. str(source_module:GetFullName()) .. ')')
+	end
+
 	for _, child in ipairs(node.children) do
-		extend(lines, compile_child(var, child, depth + 1, scope_var, scope_locals)) end
+		extend(lines, compile_child(var, child, depth + 1, scope_var, scope_locals, current_component)) end
 
 	return lines, var
 end
@@ -1038,6 +1058,27 @@ function group_comment(indent, label)
 
 -- ——— ui loading ——————————————————————————————————————————
 
+local function inject_sourcefrag(frag_str, name)
+	local start_idx = string.find(frag_str, "<")
+	if not start_idx then return frag_str end
+
+	local name_start = start_idx + 1
+	local name_end = name_start
+	while name_end <= #frag_str do
+		local char = string.sub(frag_str, name_end, name_end)
+		if char:match("[%s/>]") then break end
+		name_end += 1
+	end
+
+	local tagName = string.sub(frag_str, name_start, name_end - 1)
+	if tagName == "" then
+		if string.sub(frag_str, name_start, name_start) == ">" then
+			return string.sub(frag_str, 1, start_idx) .. 'Fragment __source_fragment="' .. name .. '"' .. string.sub(frag_str, name_start)
+		else return frag_str end end
+
+	return string.sub(frag_str, 1, name_end - 1) .. ' __source_fragment="' .. name .. '"' .. string.sub(frag_str, name_end)
+end
+
 local function resolve_includes(ui_text, fragments)
 	local resolved = ui_text
 	local pattern  = "@include%(([%a_][%w_]*)%)"
@@ -1049,7 +1090,7 @@ local function resolve_includes(ui_text, fragments)
 			if fragments[name] == nil then error("Unknown backend UI fragment include: " .. name) end
 
 			changed = true
-			return fragments[name]
+			return inject_sourcefrag(fragments[name], name)
 		end)
 
 		resolved = next_resolved
@@ -1115,7 +1156,7 @@ return {
 	return lua
 end
 
-function M.generate_from_app(app, runtime_text, xml_parser)
+function M.generate_from_app(app, runtime_text, xml_parser, app_module)
 	if type(runtime_text) == "function" then runtime_text = runtime_text() end
 
 	if type(runtime_text) ~= "string" then
@@ -1134,12 +1175,14 @@ function M.generate_from_app(app, runtime_text, xml_parser)
 
 	M._xml_parser = xml_parser
 	M._stylesheet_rules = parse_stylesheet(app.stylesheet or app.css)
+	M._app_module = app_module
 
 	local src = preprocess_luaxml(load_uiapp(app))
 	local root = build(xml_parser.fromstring(src))
 
 	local lines, root_vars = compile_root(root)
 	M._stylesheet_rules = nil
+	M._app_module = nil
 	local lua = table.concat(lines, "\n")
 
 	lua = table.concat({
