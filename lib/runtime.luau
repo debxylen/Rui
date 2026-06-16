@@ -5,6 +5,8 @@ return [=[
 local app = (__RUI_INLINE_APP_FACTORY__)()
 if type(app) ~= "table" then error("[Rui] App module must return a table") end
 
+local _cleanup_fn = nil
+
 -- ——— core state ————————————————————————————————————————
 
 local TweenService      = game:GetService("TweenService")
@@ -333,11 +335,12 @@ end
 
 if type(app.init) == "function" then
 	app.init({
-		state    = state,
-		setState = setState,
-		dispatch = dispatch,
-		navigate = navigate,
-		getById  = getById,
+		state     = state,
+		setState  = setState,
+		dispatch  = dispatch,
+		navigate  = navigate,
+		getById   = getById,
+		onCleanup = function(cb) _cleanup_fn = cb end,
 	})
 end
 

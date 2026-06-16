@@ -26,6 +26,11 @@ local function createMountHandle(roots)
 			if root and root.Parent then root:Destroy() end
 		end
 
+		if type(self.roots.cleanup) == "function" then
+			local ok, err = pcall(self.roots.cleanup)
+			if not ok then warn("[Rui] Cleanup error: " .. tostring(err)) end
+		end
+
 		self.roots = nil
 	end
 

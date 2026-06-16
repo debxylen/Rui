@@ -67,12 +67,16 @@ local function is_expr(value)        return type(value) == "table" and value.kin
 local PROP_SETTERS = {
 	size            = { "Size",                   parse_scalepair },
 	position        = { "Position",               parse_scalepair },
+	AnchorPoint     = { "AnchorPoint",            parse_scalepair },
 	backgroundColor = { "BackgroundColor3",       parse_rgb },
 	textColor       = { "TextColor3",             parse_rgb },
+	borderColor     = { "BorderColor3",           parse_rgb },
 	cornerRadius    = { "__cornerRadius",         tonumber },
 	textScaled      = { "TextScaled",             parse_bool },
 	text            = { "Text",                   function(v) return v end },
 	visible         = { "Visible",                parse_bool },
+	fontFace 		= { "FontFace",  			  function(v) return v end },
+	borderSize      = { "BorderSizePixel",        tonumber },
 	backgroundTransparency = { "BackgroundTransparency", tonumber },
 	textTransparency       = { "TextTransparency",       tonumber },
 }
@@ -970,16 +974,21 @@ function compile_node(node, depth, scope_var, scope_locals)
 
 	local fmt_rgb   = function(v) return "Color3.fromRGB(" .. v[1] .. ", " .. v[2] .. ", " .. v[3] .. ")" end
 	local fmt_scale = function(v) return "UDim2.fromScale(" .. v[2] .. ", " .. v[3] .. ")" end
+	local fmt_vec2  = function(v) return "Vector2.new(" .. v[2] .. ", " .. v[3] .. ")" end
+	local fmt_font  = function(v) return "Font.fromName(\"" .. v .. "\")" end
 
 	for k, v in pairs(node.props) do
 		if     k == "Size"                   then compile_prop(lines, var, "Size", v, indent, scope_var, scope_locals, fmt_scale)
 		elseif k == "Position"               then compile_prop(lines, var, "Position", v, indent, scope_var, scope_locals, fmt_scale)
+		elseif k == "AnchorPoint"            then compile_prop(lines, var, "AnchorPoint", v, indent, scope_var, scope_locals, fmt_vec2)
 		elseif k == "BackgroundColor3"       then compile_prop(lines, var, "BackgroundColor3", v, indent, scope_var, scope_locals, fmt_rgb)
 		elseif k == "TextColor3"             then compile_prop(lines, var, "TextColor3", v, indent, scope_var, scope_locals, fmt_rgb)
+		elseif k == "BorderColor3"           then compile_prop(lines, var, "BorderColor3", v, indent, scope_var, scope_locals, fmt_rgb)
 		elseif k == "BackgroundTransparency" then compile_prop(lines, var, "BackgroundTransparency", v, indent, scope_var, scope_locals)
 		elseif k == "TextTransparency"       then compile_prop(lines, var, "TextTransparency", v, indent, scope_var, scope_locals)
 		elseif k == "Text"                   then extend(lines, compile_textbind(node, var, indent, scope_var, scope_locals))
 		elseif k == "Visible"                then extend(lines, compile_visiblebind(node, var, indent, scope_var, scope_locals))
+		elseif k == "FontFace"				 then compile_prop(lines, var, "FontFace", v, indent, scope_var, scope_locals, fmt_font)
 		elseif k == "TextScaled"             then compile_prop(lines, var, "TextScaled", v, indent, scope_var, scope_locals)
 		elseif startswith(k, "__rawprop__")  then extend(lines, compile_rawprop(var, k, v, indent, scope_var, scope_locals)) end
 	end
@@ -1083,7 +1092,10 @@ else
 
 end
 
-return { __ROOT_RETURN_VALUES__ }
+return {
+    cleanup = _cleanup_fn,
+    __ROOT_RETURN_VALUES__
+}
 ]]
 
 	local lines_playergui = {}
