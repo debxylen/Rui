@@ -47,6 +47,11 @@ local function parse_scalepair(value)
 	return { "scale", tonumber(x), tonumber(y) }
 end
 
+local function parse_offsetpair(value)
+	local x, y = string.match(value, "^%s*(-?%d+)%s*,%s*(-?%d+)%s*$")
+	return { "offset", tonumber(x), tonumber(y) }
+end
+
 local function parse_rgb(value)
 	local r, g, b = string.match(value, "^%s*(%d+)%s*,%s*(%d+)%s*,%s*(%d+)%s*$")
 	return { tonumber(r), tonumber(g), tonumber(b) }
@@ -66,7 +71,9 @@ local function is_expr(value)        return type(value) == "table" and value.kin
 
 local PROP_SETTERS = {
 	size            = { "Size",                   parse_scalepair },
+	offsetSize      = { "Size",                   parse_offsetpair },
 	position        = { "Position",               parse_scalepair },
+	offsetPosition  = { "Position",               parse_offsetpair },
 	AnchorPoint     = { "AnchorPoint",            parse_scalepair },
 	backgroundColor = { "BackgroundColor3",       parse_rgb },
 	textColor       = { "TextColor3",             parse_rgb },
@@ -977,14 +984,16 @@ function compile_node(node, depth, scope_var, scope_locals, current_component)
 		append(lines, indent .. var .. ".ResetOnSpawn = false")
 	end
 
-	local fmt_rgb   = function(v) return "Color3.fromRGB(" .. v[1] .. ", " .. v[2] .. ", " .. v[3] .. ")" end
-	local fmt_scale = function(v) return "UDim2.fromScale(" .. v[2] .. ", " .. v[3] .. ")" end
-	local fmt_vec2  = function(v) return "Vector2.new(" .. v[2] .. ", " .. v[3] .. ")" end
-	local fmt_font  = function(v) return "Font.fromName(\"" .. v .. "\")" end
+	local fmt_rgb    = function(v) return "Color3.fromRGB(" .. v[1] .. ", " .. v[2] .. ", " .. v[3] .. ")" end
+	local fmt_scale  = function(v) return "UDim2.fromScale(" .. v[2] .. ", " .. v[3] .. ")" end
+	local fmt_offset = function(v) return "UDim2.fromOffset(" .. v[2] .. ", " .. v[3] .. ")" end
+	local fmt_dim2   = function(v) return v[1] == "offset" and fmt_offset(v) or fmt_scale(v) end
+	local fmt_vec2   = function(v) return "Vector2.new(" .. v[2] .. ", " .. v[3] .. ")" end
+	local fmt_font   = function(v) return "Font.fromName(\"" .. v .. "\")" end
 
 	for k, v in pairs(node.props) do
-		if     k == "Size"                   then compile_prop(lines, var, "Size", v, indent, scope_var, scope_locals, fmt_scale)
-		elseif k == "Position"               then compile_prop(lines, var, "Position", v, indent, scope_var, scope_locals, fmt_scale)
+		if     k == "Size"                   then compile_prop(lines, var, "Size", v, indent, scope_var, scope_locals, fmt_dim2)
+		elseif k == "Position"               then compile_prop(lines, var, "Position", v, indent, scope_var, scope_locals, fmt_dim2)
 		elseif k == "AnchorPoint"            then compile_prop(lines, var, "AnchorPoint", v, indent, scope_var, scope_locals, fmt_vec2)
 		elseif k == "BackgroundColor3"       then compile_prop(lines, var, "BackgroundColor3", v, indent, scope_var, scope_locals, fmt_rgb)
 		elseif k == "TextColor3"             then compile_prop(lines, var, "TextColor3", v, indent, scope_var, scope_locals, fmt_rgb)
