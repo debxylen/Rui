@@ -220,6 +220,73 @@ function bindLuaBlock(parent, selector, factories, scope)
 	updateLuaBlock(binding)
 end
 
+function bindStyleState(instance, propName, config, scope)
+	local isHovered = false
+	local isActive  = false
+
+	local defaultVal = nil
+	local ok, current = pcall(function() return instance[propName] end)
+	if ok then defaultVal = current end
+	
+	local function evaluate(val)
+		if type(val) == "function" then return val(scope)
+		else return val end
+	end
+
+	local function update()
+		if not instance or not instance.Parent then return end
+		local targetVal = nil
+
+		if isActive and config.active ~= nil then
+			targetVal = evaluate(config.active)
+
+		elseif isHovered and config.hover ~= nil then
+			targetVal = evaluate(config.hover)
+
+		elseif config.states then
+			for _, st in ipairs(config.states) do
+				local stateVal  = state[st.key]
+				local appliesRn = false
+
+				if st.val ~= nil then appliesRn = (tostring(stateVal) == tostring(st.val))
+				else appliesRn = not not stateVal end
+
+				if appliesRn then
+					targetVal = evaluate(st.propVal)
+					break
+		end end end
+
+		if targetVal == nil then
+			if config.base ~= nil then targetVal = evaluate(config.base)
+			else targetVal = defaultVal end
+		end
+
+		if targetVal ~= nil then applyPropertyValue(instance, propName, targetVal) end
+	end
+
+	if config.hover ~= nil then
+		instance.MouseEnter:Connect(function() isHovered = true; update() end)
+		instance.MouseLeave:Connect(function() isHovered = false; update() end)
+	end
+
+	if config.active ~= nil then
+		instance.InputBegan:Connect(function(input)
+			if not (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then return end
+			isActive = true; update()
+		end)
+		instance.InputEnded:Connect(function(input)
+			if not (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then return end
+			isActive = false; update()
+		end)
+	end
+
+	if config.states then
+		for _, st in ipairs(config.states) do
+			registerBinding(st.key, { update = update, instance = instance }) end end
+
+	update()
+end
+
 -- ——— state updates ——————————————————————————————————————
 
 function setState(key, value)
@@ -231,7 +298,8 @@ function setState(key, value)
 	local bindings = bindingsByKey[key]
 	if bindings then
 		for _, b in ipairs(bindings) do
-			if b.instance and b.instance.Parent then b.instance.Text = renderTemplate(b.template) end
+			if b.update then b.update()
+			elseif b.instance and b.instance.Parent then b.instance.Text = renderTemplate(b.template) end
 		end
 	end
 

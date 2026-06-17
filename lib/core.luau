@@ -35,6 +35,8 @@ local ALLOWED_RAWPROPS = {
 	ResetOnSpawn = true,
 }
 
+local MAX_CSSVAR_PASSES = 5
+
 -- ——— parsing helpers —————————————————————————————————————
 
 local function parse_bool(value)
@@ -65,9 +67,24 @@ local function parse_scalar(value)
 	return value
 end
 
+local function fmt_rgb    (v) return "Color3.fromRGB(" .. v[1] .. ", " .. v[2] .. ", " .. v[3] .. ")" end
+local function fmt_scale  (v) return "UDim2.fromScale(" .. v[2] .. ", " .. v[3] .. ")" end
+local function fmt_offset (v) return "UDim2.fromOffset(" .. v[2] .. ", " .. v[3] .. ")" end
+local function fmt_dim2   (v) return v[1] == "offset" and fmt_offset(v) or fmt_scale(v) end
+local function fmt_vec2   (v) return "Vector2.new(" .. v[2] .. ", " .. v[3] .. ")" end
+local function fmt_font   (v) return "Font.fromName(\"" .. v .. "\")" end
+
 local function is_luaexpr(value)     return type(value) == "string" and #value >= 2 and startswith(value, "{") and endswith(value, "}") end
 local function parse_expr(value)     return { kind = "expr", code = strip(string.sub(value, 2, -2)) } end
 local function is_expr(value)        return type(value) == "table" and value.kind == "expr" end
+
+local function resolve_and_parse(val, parser)
+	val = string.gsub(val, "var%((%-%-[%w%-]+)%)", function(var_name)
+		local replacement = M._variables and M._variables[var_name]
+		return replacement or ("var(" .. var_name .. ")")
+	end)
+	return is_luaexpr(val) and parse_expr(val) or parser(val)
+end
 
 local PROP_SETTERS = {
 	size            = { "Size",                   parse_scalepair },
@@ -94,32 +111,75 @@ local TRANSITION_KEYS = { transition = "preset", transitionTime = "time", transi
 
 -- ——— stylesheets —————————————————————————————————————
 
+local function parse_selector(selector)
+	local base, state_key, state_val = string.match(selector, "^([^:]+):state%(([%w_]+)%s*=%s*([^%)]+)%)$")
+	if base then return strip(base), "state", strip(state_key), strip(state_val) end
+
+	base, state_key = string.match(selector, "^([^:]+):state%(([%w_]+)%)$")
+	if base then return strip(base), "state", strip(state_key), nil end
+
+	local base_sel, pseudo = string.match(selector, "^([^:]+):([%w%-]+)$")
+	if base_sel then return strip(base_sel), strip(pseudo), nil, nil end
+
+	return selector, nil, nil, nil
+end
+
 local function parse_stylesheet(css_str)
-	local rules = {}
-	if not css_str or css_str == "" then return rules end
+	local rules     = {}
+	local variables = {}
+	if not css_str or css_str == "" then return {}, {} end
+
 	css_str = string.gsub(css_str, "/%*.-%*/", "")
+
+	for name, val in string.gmatch(css_str, "(%-%-[%w%-]+)%s*:%s*([^;\n}]+)") do
+		variables[strip(name)] = strip(val) end
 
 	for selectors, block in string.gmatch(css_str, "([^{]+)%s*{(.-)}") do
 		local props = {}
 
 		for name, val in string.gmatch(block, "([%w%-]+)%s*:%s*([^;}]+)") do
-			props[strip(name)] = strip(val) end
+			if startswith(strip(name), "--") then variables[strip(name)] = strip(val)
+			else props[strip(name)] = strip(val) end
+		end
 
 		for selector in string.gmatch(selectors, "([^,]+)") do
 			selector = strip(selector)
-			if selector ~= "" then append(rules, { selector = selector, props = props }) end
+			if selector ~= "" and not startswith(selector, "--") then append(rules, { selector = selector, props = props }) end
 		end
 	end
 
-	return rules
+	for _ = 1, MAX_CSSVAR_PASSES do
+		local replaced = false
+
+		for var_name, var_val in pairs(variables) do
+			variables[var_name] = string.gsub(var_val, "var%((%-%-[%w%-]+)%)", function(ref)
+				local value = variables[ref]
+				if value then replaced = true end
+				return value or ("var(" .. ref .. ")")
+			end)
+		end
+	
+		if not replaced then break end
+	end
+
+	for _, rule in ipairs(rules) do
+		for k, v in pairs(rule.props) do
+			rule.props[k] = string.gsub(v, "var%((%-%-[%w%-]+)%)", function(ref)
+				return variables[ref] or ("var(" .. ref .. ")")
+			end)
+		end
+	end
+
+	return rules, variables
 end
 
 local function matches_selector(node, selector)
-	if selector == "*" then return true end
-	if node.tag == selector then return true end
+	local base = parse_selector(selector)
+	if base == "*" then return true end
+	if node.tag == base then return true end
 
-	if startswith(selector, ".") then
-		local target = string.sub(selector, 2)
+	if startswith(base, ".") then
+		local target = string.sub(base, 2)
 		local class_attr = node.attrib.class or node.attrib.className
 		if not class_attr then return false end
 
@@ -131,27 +191,50 @@ local function matches_selector(node, selector)
 end
 
 local function specificity(selector)
-	if selector == "*" then return 0 end
-	if startswith(selector, ".") then return 2 end
+	local base = parse_selector(selector)
+	if base == "*" then return 0 end
+	if startswith(base, ".") then return 2 end
 	return 1
 end
 
 local function apply_stylesheet(node, rules)
-	local attribs = {}
-	local prop_specs = {}
+	local attribs       = {}
+	local specificities = {}
+	local dynamic_attr  = {}
 
 	for _, rule in ipairs(rules) do
 		if not matches_selector(node, rule.selector) then continue end
 		local spec = specificity(rule.selector)
+		local _, pseudo, state_key, state_val = parse_selector(rule.selector)
 
 		for k, v in pairs(rule.props) do
-			if spec < (prop_specs[k] or -1) then continue end
-			attribs[k] = v
-			prop_specs[k] = spec
-	end end
+			if pseudo == nil then
+				if spec >= (specificities[k] or -1) then
+					attribs[k] = v
+					specificities[k] = spec
+				end
+
+			else
+				if not dynamic_attr[k] then dynamic_attr[k] = {} end
+				local dyn = dynamic_attr[k]
+
+				if pseudo == "hover" then
+					if (not dyn.hover) or (spec >= dyn.hover.spec) then
+						dyn.hover = { val = v, spec = spec } end
+
+				elseif pseudo == "active" then
+					if (not dyn.active) or (spec >= dyn.active.spec) then
+						dyn.active = { val = v, spec = spec } end
+
+				elseif pseudo == "state" then
+					dyn.states = dyn.states or {}
+					table.insert(dyn.states, { key = state_key, val = state_val, propVal = v, spec = spec })
+				end
+	end end end
 
 	for k, v in pairs(node.attrib) do attribs[k] = v end
-	return attribs
+
+	return attribs, dynamic_attr
 end
 
 -- ——— builds ——————————————————————————————————————————
@@ -161,9 +244,17 @@ local function parse_props(node, stylesheet_rules)
 	local layout     = {}
 	local tween      = {}
 	local transition = {}
+	local dynaStyles = {}
 
-	local attribs = node.attrib
-	if stylesheet_rules then attribs = apply_stylesheet(node, stylesheet_rules) end
+	local attribs, dynamic_attr = node.attrib, {}
+	if stylesheet_rules then attribs, dynamic_attr = apply_stylesheet(node, stylesheet_rules) end
+
+	for k, v in pairs(attribs) do
+		attribs[k] = string.gsub(v, "var%((%-%-[%w%-]+)%)", function(var_name)
+			local replacement = M._variables and M._variables[var_name]
+			return replacement or ("var(" .. var_name .. ")")
+		end)
+	end
 
 	for k, v in pairs(attribs) do
 		if k == "class" or k == "className" then continue end
@@ -194,6 +285,42 @@ local function parse_props(node, stylesheet_rules)
 		else props["__rawprop__" .. k] = is_luaexpr(v) and parse_expr(v) or parse_scalar(v) end
 	end
 
+	for k, dyn in pairs(dynamic_attr) do
+		if k == "class" or k == "className" then continue end
+
+		local robloxProps = {}
+		local parser = parse_scalar
+
+		if k == "transparency" then
+			robloxProps = { "BackgroundTransparency", "TextTransparency" }
+			parser = tonumber
+
+		elseif PROP_SETTERS[k] then
+			table.insert(robloxProps, PROP_SETTERS[k][1])
+			parser = PROP_SETTERS[k][2]
+
+		elseif not startswith(k, "on") then
+			table.insert(robloxProps, k) end
+
+		for _, robloxProp in ipairs(robloxProps) do
+			dynaStyles[robloxProp] = {
+				hover  = dyn.hover and resolve_and_parse(dyn.hover.val, parser) or nil,
+				active = dyn.active and resolve_and_parse(dyn.active.val, parser) or nil,
+				states = nil,
+			}
+			if dyn.states then
+				local statesList = {}
+				for _, st in ipairs(dyn.states) do
+					table.insert(statesList, {
+						key     = st.key,
+						val     = st.val,
+						propVal = resolve_and_parse(st.propVal, parser),
+					})
+				end
+				dynaStyles[robloxProp].states = statesList
+	end end end
+
+	if next(dynaStyles) ~= nil then props.__dynaStyles = dynaStyles end
 	if next(layout)     ~= nil then props.__layout     = layout     end
 	if next(tween)      ~= nil then props.__tween      = tween      end
 	if next(transition) ~= nil then props.__transition = transition end
@@ -959,6 +1086,79 @@ function compile_fragchilds(fragment_src, depth, scope_var, scope_locals, curren
 	return lines, roots
 end
 
+local function compute_dynastyles(node, var, indent, scope_var, scope_locals)
+	local dynamicStyles = node.props.__dynaStyles
+	if not dynamicStyles then return {} end
+
+	local lines = {}
+	for propName, cfg in pairs(dynamicStyles) do
+		local baseVal = node.props[propName]
+
+		local function formatVal(v)
+			if type(v) == "table" then
+				if propName == "AnchorPoint" 				then return fmt_vec2(v)
+				elseif v[1] == "scale" or v[1] == "offset"  then return fmt_dim2(v)
+				elseif #v == 3 and type(v[1]) == "number"   then return fmt_rgb(v) end
+
+			elseif type(v) == "string" then
+				if propName == "FontFace" then return fmt_font(v) end
+				return str(v) end
+
+			return tostring(v)
+		end
+
+		local configParts = {}
+
+		if baseVal ~= nil then
+			if type(baseVal) == "table" and baseVal.kind == "expr" then
+				local fn_lines, fn_var = compile_func(baseVal.code, indent, scope_var, false, "dyn_base", scope_locals)
+				extend(lines, fn_lines)
+				table.insert(configParts, "base = " .. fn_var)
+			else
+				table.insert(configParts, "base = " .. formatVal(baseVal)) end end
+
+		if cfg.hover ~= nil then
+			if type(cfg.hover) == "table" and cfg.hover.kind == "expr" then
+				local fn_lines, fn_var = compile_func(cfg.hover.code, indent, scope_var, false, "dyn_hover", scope_locals)
+				extend(lines, fn_lines)
+				table.insert(configParts, "hover = " .. fn_var)
+			else
+				table.insert(configParts, "hover = " .. formatVal(cfg.hover)) end end
+
+		if cfg.active ~= nil then
+			if type(cfg.active) == "table" and cfg.active.kind == "expr" then
+				local fn_lines, fn_var = compile_func(cfg.active.code, indent, scope_var, false, "dyn_active", scope_locals)
+				extend(lines, fn_lines)
+				table.insert(configParts, "active = " .. fn_var)
+			else
+				table.insert(configParts, "active = " .. formatVal(cfg.active)) end end
+
+		if cfg.states ~= nil then
+			local stateParts = {}
+			for _, st in ipairs(cfg.states) do
+				local valStr = st.val ~= nil and str(st.val) or "nil"
+				local propValStr
+
+				if type(st.propVal) == "table" and st.propVal.kind == "expr" then
+					local fn_lines, fn_var = compile_func(st.propVal.code, indent, scope_var, false, "dyn_state", scope_locals)
+					extend(lines, fn_lines)
+					propValStr = fn_var
+				else
+					propValStr = formatVal(st.propVal) end
+
+				table.insert(stateParts, "{ key = " .. str(st.key) .. ", val = " .. valStr .. ", propVal = " .. propValStr .. " }")
+			end
+
+			table.insert(configParts, "states = { " .. table.concat(stateParts, ", ") .. " }")
+		end
+
+		local configStr = "{ " .. table.concat(configParts, ", ") .. " }"
+		append(lines, indent .. "bindStyleState(" .. var .. ", " .. str(propName) .. ", " .. configStr .. ", " .. (scope_var or "nil") .. ")")
+	end
+
+	return lines
+end
+
 -- ——— node compilation ————————————————————————————————————
 
 function compile_node(node, depth, scope_var, scope_locals, current_component)
@@ -977,21 +1177,17 @@ function compile_node(node, depth, scope_var, scope_locals, current_component)
 	}
 
 	if node.props.__runtimeName then
-		extend(lines, compile_computedprop(var, "Name", node.props.__runtimeName.code, indent, scope_var, scope_locals))
-	end
+		extend(lines, compile_computedprop(var, "Name", node.props.__runtimeName.code, indent, scope_var, scope_locals)) end
 
 	if node.type == "ScreenGui" then
-		append(lines, indent .. var .. ".ResetOnSpawn = false")
-	end
-
-	local fmt_rgb    = function(v) return "Color3.fromRGB(" .. v[1] .. ", " .. v[2] .. ", " .. v[3] .. ")" end
-	local fmt_scale  = function(v) return "UDim2.fromScale(" .. v[2] .. ", " .. v[3] .. ")" end
-	local fmt_offset = function(v) return "UDim2.fromOffset(" .. v[2] .. ", " .. v[3] .. ")" end
-	local fmt_dim2   = function(v) return v[1] == "offset" and fmt_offset(v) or fmt_scale(v) end
-	local fmt_vec2   = function(v) return "Vector2.new(" .. v[2] .. ", " .. v[3] .. ")" end
-	local fmt_font   = function(v) return "Font.fromName(\"" .. v .. "\")" end
+		append(lines, indent .. var .. ".ResetOnSpawn = false") end
 
 	for k, v in pairs(node.props) do
+		local dynKey = k
+		if startswith(k, "__rawprop__") then dynKey = string.sub(k, #"__rawprop__" + 1) end
+
+		if node.props.__dynaStyles and node.props.__dynaStyles[dynKey] then continue end
+
 		if     k == "Size"                   then compile_prop(lines, var, "Size", v, indent, scope_var, scope_locals, fmt_dim2)
 		elseif k == "Position"               then compile_prop(lines, var, "Position", v, indent, scope_var, scope_locals, fmt_dim2)
 		elseif k == "AnchorPoint"            then compile_prop(lines, var, "AnchorPoint", v, indent, scope_var, scope_locals, fmt_vec2)
@@ -1016,6 +1212,7 @@ function compile_node(node, depth, scope_var, scope_locals, current_component)
 	extend(lines, compile_layout(node, var, indent))
 	extend(lines, compile_corner(node, var, indent, scope_var, scope_locals))
 	extend(lines, compile_events(node, var, indent, scope_var, scope_locals))
+	extend(lines, compute_dynastyles(node, var, indent, scope_var, scope_locals))
 
 	if node.props.__id then
 		append(lines, indent .. "registerElementId(" .. str(node.props.__id) .. ", " .. var .. ")") end
@@ -1183,14 +1380,17 @@ function M.generate_from_app(app, runtime_text, xml_parser, app_module)
 	end
 
 	M._xml_parser = xml_parser
-	M._stylesheet_rules = parse_stylesheet(app.stylesheet or app.css)
+	local rules, variables = parse_stylesheet(app.stylesheet or app.css)
+	M._stylesheet_rules = rules
+	M._variables = variables
 	M._app_module = app_module
-
+ 
 	local src = preprocess_luaxml(load_uiapp(app))
 	local root = build(xml_parser.fromstring(src))
-
+ 
 	local lines, root_vars = compile_root(root)
 	M._stylesheet_rules = nil
+	M._variables = nil
 	M._app_module = nil
 	local lua = table.concat(lines, "\n")
 
