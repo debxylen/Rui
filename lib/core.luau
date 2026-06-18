@@ -28,11 +28,25 @@ local EVENT_MAP = {
 }
 
 local ALLOWED_RAWPROPS = {
-	IgnoreGuiInset = true,
-	Active = true,
-	LayoutOrder = true,
-	GroupTransparency = true,
-	ResetOnSpawn = true,
+	IgnoreGuiInset         = true,
+	Active                 = true,
+	LayoutOrder            = true,
+	GroupTransparency      = true,
+	ResetOnSpawn           = true,
+	Visible                = true,
+	Enabled                = true,
+	Image                  = true,
+	ImageTransparency      = true,
+	BorderSizePixel        = true,
+	TextXAlignment         = true,
+	Rotation               = true,
+	ScrollBarThickness     = true,
+	DominantAxis           = true,
+	AspectRatio            = true,
+	ScaleType              = true,
+	TextScaled             = true,
+	BackgroundTransparency = true,
+	TextTransparency       = true,
 }
 
 local MAX_CSSVAR_PASSES = 5
@@ -56,7 +70,7 @@ end
 
 local function parse_rgb(value)
 	local r, g, b = string.match(value, "^%s*(%d+)%s*,%s*(%d+)%s*,%s*(%d+)%s*$")
-	return { tonumber(r), tonumber(g), tonumber(b) }
+	return { "rgb", tonumber(r), tonumber(g), tonumber(b) }
 end
 
 local function parse_scalar(value)
@@ -67,12 +81,12 @@ local function parse_scalar(value)
 	return value
 end
 
-local function fmt_rgb    (v) return "Color3.fromRGB(" .. v[1] .. ", " .. v[2] .. ", " .. v[3] .. ")" end
+local function fmt_rgb    (v) return "Color3.fromRGB(" .. v[2] .. ", " .. v[3] .. ", " .. v[4] .. ")" end
 local function fmt_scale  (v) return "UDim2.fromScale(" .. v[2] .. ", " .. v[3] .. ")" end
 local function fmt_offset (v) return "UDim2.fromOffset(" .. v[2] .. ", " .. v[3] .. ")" end
 local function fmt_dim2   (v) return v[1] == "offset" and fmt_offset(v) or fmt_scale(v) end
 local function fmt_vec2   (v) return "Vector2.new(" .. v[2] .. ", " .. v[3] .. ")" end
-local function fmt_font   (v) return "Font.fromName(\"" .. v .. "\")" end
+local function fmt_font   (v) return "Font.fromName(\"" .. v[2] .. "\")" end
 
 local function is_luaexpr(value)     return type(value) == "string" and #value >= 2 and startswith(value, "{") and endswith(value, "}") end
 local function parse_expr(value)     return { kind = "expr", code = strip(string.sub(value, 2, -2)) } end
@@ -91,18 +105,13 @@ local PROP_SETTERS = {
 	offsetSize      = { "Size",                   parse_offsetpair },
 	position        = { "Position",               parse_scalepair },
 	offsetPosition  = { "Position",               parse_offsetpair },
-	AnchorPoint     = { "AnchorPoint",            parse_scalepair },
+	anchorPoint     = { "AnchorPoint",            parse_scalepair },
 	backgroundColor = { "BackgroundColor3",       parse_rgb },
 	textColor       = { "TextColor3",             parse_rgb },
 	borderColor     = { "BorderColor3",           parse_rgb },
 	cornerRadius    = { "__cornerRadius",         tonumber },
-	textScaled      = { "TextScaled",             parse_bool },
 	text            = { "Text",                   function(v) return v end },
-	visible         = { "Visible",                parse_bool },
-	fontFace 		= { "FontFace",  			  function(v) return v end },
-	borderSize      = { "BorderSizePixel",        tonumber },
-	backgroundTransparency = { "BackgroundTransparency", tonumber },
-	textTransparency       = { "TextTransparency",       tonumber },
+	fontFace 		= { "FontFace",  			  function(v) return { "font", v } end },
 }
 
 local LAYOUT_KEYS     = { direction = "direction", gap = "gap", padding = "padding", align = "align" }
@@ -283,7 +292,7 @@ local function parse_props(node, stylesheet_rules)
 		elseif startswith(k, "on") then error("[Rui] Unsupported event: " .. tostring(k))
 
 		elseif node.tag == "LuaBlock" and k == "key" then props.__luaBlockKey = v
-		else props["__rawprop__" .. k] = is_luaexpr(v) and parse_expr(v) or parse_scalar(v) end
+		else props["__rawprop__" .. k:gsub("^%l", string.upper)] = is_luaexpr(v) and parse_expr(v) or parse_scalar(v) end
 	end
 
 	for k, dyn in pairs(dynamic_attr) do
@@ -301,7 +310,7 @@ local function parse_props(node, stylesheet_rules)
 			parser = PROP_SETTERS[k][2]
 
 		elseif not startswith(k, "on") then
-			table.insert(robloxProps, k) end
+			table.insert(robloxProps, k:gsub("^%l", string.upper)) end
 
 		for _, robloxProp in ipairs(robloxProps) do
 			dynaStyles[robloxProp] = {
@@ -1149,14 +1158,12 @@ local function compute_dynastyles(node, var, indent, scope_var, scope_locals)
 		local function formatVal(v)
 			if type(v) == "table" then
 				if propName == "AnchorPoint" 				then return fmt_vec2(v)
+				elseif v[1] == "font" 						then return fmt_font(v)
 				elseif v[1] == "scale" or v[1] == "offset"  then return fmt_dim2(v)
 				elseif #v == 3 and type(v[1]) == "number"   then return fmt_rgb(v) end
 
-			elseif type(v) == "string" then
-				if propName == "FontFace" then return fmt_font(v) end
-				return str(v) end
-
-			return tostring(v)
+			elseif type(v) == "string" then return str(v)
+			else return tostring(v) end
 		end
 
 		local configParts = {}
@@ -1246,12 +1253,8 @@ function compile_node(node, depth, scope_var, scope_locals, current_component)
 		elseif k == "BackgroundColor3"       then compile_prop(lines, var, "BackgroundColor3", v, indent, scope_var, scope_locals, fmt_rgb)
 		elseif k == "TextColor3"             then compile_prop(lines, var, "TextColor3", v, indent, scope_var, scope_locals, fmt_rgb)
 		elseif k == "BorderColor3"           then compile_prop(lines, var, "BorderColor3", v, indent, scope_var, scope_locals, fmt_rgb)
-		elseif k == "BackgroundTransparency" then compile_prop(lines, var, "BackgroundTransparency", v, indent, scope_var, scope_locals)
-		elseif k == "TextTransparency"       then compile_prop(lines, var, "TextTransparency", v, indent, scope_var, scope_locals)
 		elseif k == "Text"                   then extend(lines, compile_textbind(node, var, indent, scope_var, scope_locals))
-		elseif k == "Visible"                then extend(lines, compile_visiblebind(node, var, indent, scope_var, scope_locals))
 		elseif k == "FontFace"				 then compile_prop(lines, var, "FontFace", v, indent, scope_var, scope_locals, fmt_font)
-		elseif k == "TextScaled"             then compile_prop(lines, var, "TextScaled", v, indent, scope_var, scope_locals)
 		elseif startswith(k, "__rawprop__")  then extend(lines, compile_rawprop(var, k, v, indent, scope_var, scope_locals)) end
 	end
 
