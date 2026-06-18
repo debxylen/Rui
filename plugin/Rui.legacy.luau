@@ -163,11 +163,18 @@ local RS = game:GetService("ReplicatedStorage")
 local compiledFolder = RS:WaitForChild("__RUI_COMPILED")
 local rui = require(RS:WaitForChild("Rui"):WaitForChild("rui"))
 
-for _, mod in ipairs(compiledFolder:GetChildren()) do
-	if mod:IsA("ModuleScript") then
-		rui.mount(mod)
-	end
+local function mount(mod)
+	if not mod:IsA("ModuleScript") then return end
+
+	local ok, result = pcall(function()
+		return rui.mount(mod)
+	end)
+
+	if ok then print("[RUI] Mounted: " .. mod.Name)
+	else warn("[RUI] Failed to mount " .. mod.Name .. ": " .. tostring(result)) end
 end
+
+for _, mod in ipairs(compiledFolder:GetChildren()) do task.spawn(mount, mod) end
 ]]
 
 	if existing and existing:IsA("LocalScript") then

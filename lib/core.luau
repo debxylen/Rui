@@ -1260,7 +1260,7 @@ function compile_node(node, depth, scope_var, scope_locals, current_component)
 
 	local child_index = node.child_index
 	if child_index ~= nil and node.type ~= "ScreenGui" and node.type ~= "Fragment" then
-		append(lines, indent .. var .. ".LayoutOrder = " .. tostring(child_index)) end
+		append(lines, indent .. "if " .. var .. ":IsA(\"GuiObject\") then " .. var .. ".LayoutOrder = " .. tostring(child_index) .. " end") end
 
 	extend(lines, compile_tween(node, var, indent))
 	extend(lines, compile_transition(node, var, indent))
@@ -1370,7 +1370,7 @@ local function resolve_includes(ui_text, fragments)
 		local changed = false
 
 		local next_resolved = string.gsub(resolved, pattern, function(name)
-			if fragments[name] == nil then error("Unknown backend UI fragment include: " .. name) end
+			if fragments[name] == nil then error("Unknown UI fragment include: " .. name) end
 
 			changed = true
 			return inject_sourcefrag(fragments[name], name)

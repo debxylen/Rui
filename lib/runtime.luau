@@ -32,7 +32,7 @@ local function append(t, v) table.insert(t, v) end
 local function warnUnknownAttribute(attrName, propName)
 	if warnedUnknowns[attrName] then return end
 	warnedUnknowns[attrName] = true
-	warn("Rui passed through unknown attribute " .. tostring(attrName) .. " as property " .. tostring(propName))
+	warn("Rui passed through unknown attribute " .. tostring(propName))
 end
 
 local function renderTemplate(template, scope)
@@ -212,6 +212,7 @@ function bindComputed(instance, prop, computer, scope)
 	local binding = { instance = instance, propName = prop, computer = computer, scope = scope }
 	append(computedBindings, binding)
 	updateComputed(binding)
+	binding.ready = true
 end
 
 function bindLuaBlock(parent, selector, factories, scope)
@@ -289,6 +290,13 @@ end
 
 -- ——— state updates ——————————————————————————————————————
 
+function gcBindings()
+	local live = {}
+	for _, b in ipairs(computedBindings) do
+		if b.instance and b.instance.Parent then live[#live+1] = b end end
+	computedBindings = live
+end
+
 function setState(key, value)
 	state[key] = value
 	app.state  = state
@@ -305,6 +313,8 @@ function setState(key, value)
 
 	for _, b in ipairs(luaBlockBindings) do updateLuaBlock(b) end
 	for _, b in ipairs(computedBindings) do updateComputed(b) end
+
+	if #computedBindings > 64 then gcBindings() end
 end
 
 -- ——— structure helpers ——————————————————————————————————
@@ -414,6 +424,7 @@ end
 
 function updateComputed(binding)
 	if not binding.instance then return end
+	if binding.ready and not binding.instance.Parent then return end
 	local ok, val = pcall(binding.computer, binding.scope)
 	if ok then applyPropertyValue(binding.instance, binding.propName, val)
 	else warn("Computed failed for " .. tostring(binding.propName) .. ": " .. tostring(val)) end

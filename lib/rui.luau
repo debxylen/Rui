@@ -43,7 +43,7 @@ function Rui.compile(app, appModule)
 	local appMod = appModule or app
 	local appFactorySource = Inliner.buildInlineAppFactory(appMod)
 	local runtimeSource = string.gsub(RuntimeSource, "__RUI_INLINE_APP_FACTORY__", function() return appFactorySource end)
-	return Compiler.generate_from_app(resolveAppTable(app), runtimeSource, Xml)
+	return Compiler.generate_from_app(resolveAppTable(app), runtimeSource, Xml, appMod)
 end
 
 function Rui.mount(compiledModule)
