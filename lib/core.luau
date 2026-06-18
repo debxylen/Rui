@@ -271,6 +271,7 @@ local function parse_props(node, stylesheet_rules)
 		elseif TRANSITION_KEYS[k] then transition[TRANSITION_KEYS[k]] = tonumber(v) or v
 
 		elseif EVENT_MAP[k]       then props[k]     = is_luaexpr(v) and parse_expr(v) or v
+		elseif k == "if"          then props.__if   = is_luaexpr(v) and parse_expr(v) or parse_bool(v)
 		elseif k == "id"          then props.__id   = v
 		elseif k == "name"        then
 			if is_luaexpr(v) then props.__runtimeName = parse_expr(v)
@@ -865,7 +866,57 @@ local compile_block
 local compile_fragchilds
 local compile_node
 local group_comment
+local compile_if
+local compile_dedupe
 -- / end forward declr
+
+function compile_dedupe(name_expr, parent_expr, indent)
+	if not name_expr then return {} end
+
+	local lines = {}
+	append(lines, indent .. '')
+	append(lines, indent .. 'local mountPrefix = RunService:IsRunning() and "__RUI_RUNTIME_" or "__RUI_PREVIEW_"')
+	append(lines, indent .. 'local existing = ' .. parent_expr .. ':FindFirstChild(mountPrefix .. ' .. name_expr .. ')')
+	append(lines, indent .. 'if existing then existing:Destroy() end')
+	append(lines, indent .. '')
+	return lines
+end
+
+function compile_if(child, parent_var, depth, scope_var, scope_locals, current_component)
+	local indent = string.rep("    ", depth)
+
+	local cond = child.props.__if
+	local cond_code = is_expr(cond) and cond.code or tostring(cond)
+
+	local selector_lines, selector_var = compile_func(cond_code .. ' and "cond_body" or nil', indent, scope_var, false, "cond_select", scope_locals)
+	local factories_table = alloc_name(child, "condFactories")
+	local lines = {}
+
+	extend(lines, selector_lines)
+	append(lines, indent .. "local " .. factories_table .. " = {}")
+	append(lines, indent .. factories_table .. '["cond_body"] = function(parent, fragmentScope)')
+
+	local saved_if = child.props.__if
+	child.props.__if = nil
+
+	local child_lines, child_var = compile_node(child, depth + 1, "fragmentScope", scope_locals, current_component)
+	child.props.__if = saved_if
+
+	extend(lines, child_lines)
+
+	if parent_var == "rootParent" then
+		extend(lines, compile_dedupe(child_var .. ".Name", "parent", indent .. "    "))
+		append(lines, indent .. '    ' .. child_var .. ".Name = mountPrefix .. " .. child_var .. ".Name")
+	end
+
+	append(lines, indent .. "    " .. child_var .. ".Parent = parent")
+	append(lines, indent .. "    return {" .. child_var .. "}")
+	append(lines, indent .. "end")
+
+	append(lines, indent .. "bindLuaBlock(" .. parent_var .. ", " .. selector_var .. ", " .. factories_table .. ", " .. (scope_var or "nil") .. ")")
+
+	return lines
+end
 
 local function compile_child(parent_var, child, depth, scope_var, scope_locals, current_component)
 	local indent = string.rep("    ", depth)
@@ -878,7 +929,8 @@ local function compile_child(parent_var, child, depth, scope_var, scope_locals, 
 		return lines
 	end
 
-	if child.type == "LuaBlock" then return compile_block(child, parent_var, depth, scope_var, scope_locals, current_component) end
+	if child.type == "LuaBlock" 		then return compile_block(child, parent_var, depth, scope_var, scope_locals, current_component) end
+	if child.props and child.props.__if then return compile_if(child, parent_var, depth, scope_var, scope_locals, current_component) end
 
 	local child_lines, child_var = compile_node(child, depth + 1, scope_var, scope_locals, current_component)
 	append(child_lines, indent .. child_var .. ".Parent = " .. parent_var)
@@ -1066,7 +1118,7 @@ function compile_fragchilds(fragment_src, depth, scope_var, scope_locals, curren
 	if fragment_src == "" then return {}, {} end
 
 	local wrapped_src   = "<Fragment>\n" .. fragment_src .. "\n</Fragment>"
-	local fragment_tree = build((M._xml_parser or error("xml parser not configured")).fromstring(preprocess_luaxml(wrapped_src)))
+	local fragment_tree = build(M._xml_parser.fromstring(preprocess_luaxml(wrapped_src)))
 
 	local roots         = {}
 	local lines         = {}
@@ -1173,7 +1225,7 @@ function compile_node(node, depth, scope_var, scope_locals, current_component)
 		"",
 		group_comment(indent, node.props.__name or node.type),
 		indent .. "local " .. var .. " = Instance.new(" .. str(node.type) .. ")",
-		indent .. var .. ".Name = " .. str(var)
+		indent .. var .. ".Name = " .. str(node.props.__name or var)
 	}
 
 	if node.props.__runtimeName then
@@ -1240,6 +1292,18 @@ end
 
 local isFirstRoot = true
 local function compile_root(node)
+	if node.props and node.props.__if then
+		if not node.props.__name then
+			error("Root nodes with if=... must have a static name=... so Rui can dedupe mounts") end
+
+		local lines = {}
+
+		extend(lines, compile_dedupe(str(node.props.__name), "rootParent", ""))
+		extend(lines, compile_if(node, "rootParent", 0))
+
+		return lines, {}
+	end
+
 	if node.type == "Fragment" then
 		local root_vars = {}
 		local lines     = { group_comment("", "Fragment Root") }
@@ -1247,10 +1311,20 @@ local function compile_root(node)
 		if isFirstRoot then lines = {}; isFirstRoot = false; end
 
 		for _, child in ipairs(node.children) do
-			local child_lines, child_var = compile_node(child, 0)
-			extend(lines, child_lines)
-			append(root_vars, child_var)
-		end
+
+			if child.props and child.props.__if then
+				if not child.props.__name then
+					error("Root nodes with if=... must have a static name=... so Rui can dedupe mounts") end
+
+				extend(lines, compile_dedupe(str(child.props.__name), "rootParent", ""))
+				extend(lines, compile_if(child, "rootParent", 0))
+
+			else
+				local child_lines, child_var = compile_node(child, 0)
+				extend(lines, child_lines)
+				append(root_vars, child_var)
+
+		end end
 
 		return lines, root_vars
 	end
@@ -1319,47 +1393,58 @@ end
 
 -- ——— main entry ——————————————————————————————————————————
 
-local function append_footer(lua, root_vars)
-	lua = lua .. [[
+local function getHeader()
+	local lines = {}
 
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
+	append(lines, '')
+	append(lines, 'local Players = game:GetService("Players")')
+	append(lines, 'local RunService = game:GetService("RunService")')
+	append(lines, '')
+	append(lines, 'local rootParent')
+	append(lines, '')
+	append(lines, 'if RunService:IsRunning() then rootParent = Players.LocalPlayer:WaitForChild("PlayerGui")')
+	append(lines, 'else rootParent = game:GetService("StarterGui") end')
+	append(lines, '')
 
-if RunService:IsRunning() then
-    local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
-    runtimeRoot = playerGui
-
-	__ROOT_PARENTS_PLAYERGUI__
-
-else
-    local starterGui = game:GetService("StarterGui")
-    previewRoot = starterGui
-
-	__ROOT_PARENTS_PREVIEW__
-
+	return lines
 end
 
-return {
-    cleanup = _cleanup_fn,
-    __ROOT_RETURN_VALUES__
-}
-]]
+local function getFooter(root_vars)
+	if #root_vars == 0 then return { 'return { cleanup = _cleanup_fn }' } end
+
+	local indent = string.rep("    ", 1)
 
 	local lines_playergui = {}
 	local lines_preview = {}
 	for _, name in ipairs(root_vars) do
-		append(lines_playergui, name .. '.Name = "__RUI_RUNTIME_" .. ' .. name .. '.Name')
-		append(lines_playergui, name .. ".Parent = runtimeRoot")
 
-		append(lines_preview, name .. '.Name = "__RUI_PREVIEW_" .. ' .. name .. '.Name')
-		append(lines_preview, name .. ".Parent = previewRoot")
+		append(lines_playergui, indent .. 'local existing = rootParent:FindFirstChild("__RUI_RUNTIME_" .. ' .. name .. '.Name)')
+		append(lines_playergui, indent .. "if existing then existing:Destroy() end")
+
+		append(lines_playergui, indent .. name .. '.Name = "__RUI_RUNTIME_" .. ' .. name .. '.Name')
+		append(lines_playergui, indent .. name .. ".Parent = rootParent\n")
+
+		append(lines_preview, indent .. 'local existing = rootParent:FindFirstChild("__RUI_PREVIEW_" .. ' .. name .. '.Name)')
+		append(lines_preview, indent .. "if existing then existing:Destroy() end")
+
+		append(lines_preview, indent .. name .. '.Name = "__RUI_PREVIEW_" .. ' .. name .. '.Name')
+		append(lines_preview, indent .. name .. ".Parent = rootParent\n")
 	end
 
-	lua = string.gsub(lua, "__ROOT_PARENTS_PLAYERGUI__", table.concat(lines_playergui, "\n"))
-	lua = string.gsub(lua, "__ROOT_PARENTS_PREVIEW__", table.concat(lines_preview, "\n"))
-	lua = string.gsub(lua, "__ROOT_RETURN_VALUES__", table.concat(root_vars, ",\n"))
+	local lines = {}
 
-	return lua
+	append(lines, 'if RunService:IsRunning() then')
+	extend(lines, lines_playergui)
+	append(lines, 'else')
+	extend(lines, lines_preview)
+	append(lines, 'end')
+	append(lines, '')
+	append(lines, 'return {')
+	append(lines, '    cleanup = _cleanup_fn,')
+	append(lines, '    ' .. table.concat(root_vars, ",\n" .. indent))
+	append(lines, '}')
+
+	return lines
 end
 
 function M.generate_from_app(app, runtime_text, xml_parser, app_module)
@@ -1384,29 +1469,45 @@ function M.generate_from_app(app, runtime_text, xml_parser, app_module)
 	M._stylesheet_rules = rules
 	M._variables = variables
 	M._app_module = app_module
- 
+
 	local src = preprocess_luaxml(load_uiapp(app))
 	local root = build(xml_parser.fromstring(src))
- 
+
 	local lines, root_vars = compile_root(root)
 	M._stylesheet_rules = nil
 	M._variables = nil
 	M._app_module = nil
-	local lua = table.concat(lines, "\n")
 
-	lua = table.concat({
-		"-- ==================================================", 
+	local body   = table.concat(lines, "\n")
+	local header = table.concat(getHeader(), "\n")
+	local footer = table.concat(getFooter(root_vars), "\n")
+
+	local lua = table.concat({
+		"-- ==================================================",
+		"-- INIT",
+		"-- ==================================================",
+		header,
+
+		"-- ==================================================",
 		"-- Runtime",
 		"-- ==================================================",
+		"",
 		runtime_text:gsub("^%s+", ""):gsub("%s+$", ""),
 		"",
+
 		"-- ==================================================",
 		"-- UI",
 		"-- ==================================================",
-		lua,
+		body,
+		"",
+
+		"-- ==================================================",
+		"-- END",
+		"-- ==================================================",
+		"",
+		footer,
 	}, "\n")
 
-	lua = append_footer(lua, root_vars)
 	return lua, root_vars
 end
 
