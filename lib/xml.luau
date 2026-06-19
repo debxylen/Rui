@@ -344,15 +344,4 @@ end
 
 M.fromstring = M.XML
 
-function M.parse(src)
-    if type(src) == "string" then
-        local f = io.open(src, "rb"); if not f then error("file not found: " .. src, 0) end
-        local d = f:read("*a"); f:close()
-        return ElementTree:new(M.XML(d))
-    elseif type(src) == "table" and src.read then
-        return ElementTree:new(M.XML(src:read("*a")))
-    end
-    raise("unsupported source type", 0)
-end
-
 return M

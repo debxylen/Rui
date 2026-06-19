@@ -1,4 +1,7 @@
 local M   = {} :: any
+
+local current_app = {}
+
 local std = require(script.Parent.std)
 local xml_parser = require(script.Parent.xml)
 
@@ -52,6 +55,9 @@ local ALLOWED_RAWPROPS = {
 
 local MAX_CSSVAR_PASSES = 5
 
+local original_error = error
+local function error(message) original_error("[Rui] " .. message, 0) end
+
 -- ——— parsing helpers —————————————————————————————————————
 
 local function parse_bool(value)
@@ -93,12 +99,13 @@ local function is_luaexpr(value)     return type(value) == "string" and #value >
 local function parse_expr(value)     return { kind = "expr", code = strip(string.sub(value, 2, -2)) } end
 local function is_expr(value)        return type(value) == "table" and value.kind == "expr" end
 
-local function resolve_and_parse(val, parser)
-	val = string.gsub(val, "var%((%-%-[%w%-]+)%)", function(var_name)
-		local replacement = M._variables and M._variables[var_name]
+local function resolve_vars(val, vars)
+	local replaced = false
+	return string.gsub(val, "var%((%-%-[%w%-]+)%)", function(var_name)
+		local replacement = vars and vars[var_name]
+		if replacement ~= nil then replaced = true end
 		return replacement or ("var(" .. var_name .. ")")
-	end)
-	return is_luaexpr(val) and parse_expr(val) or parser(val)
+	end), replaced
 end
 
 local PROP_SETTERS = {
@@ -121,6 +128,9 @@ local TRANSITION_KEYS = { transition = "preset", transitionTime = "time", transi
 
 -- ——— stylesheets —————————————————————————————————————
 
+local stylesheet_vars  = {}
+local stylesheet_rules = {}
+
 local function parse_selector(selector)
 	local base, state_key, state_val = string.match(selector, "^([^:]+):state%(([%w_]+)%s*=%s*([^%)]+)%)$")
 	if base then return strip(base), "state", strip(state_key), strip(state_val) end
@@ -135,52 +145,46 @@ local function parse_selector(selector)
 end
 
 local function parse_stylesheet(css_str)
-	local rules     = {}
-	local variables = {}
 	if not css_str or css_str == "" then return {}, {} end
+
+	stylesheet_rules = {}
+	stylesheet_vars = {}
 
 	css_str = string.gsub(css_str, "/%*.-%*/", "")
 
 	for name, val in string.gmatch(css_str, "(%-%-[%w%-]+)%s*:%s*([^;\n}]+)") do
-		variables[strip(name)] = strip(val) end
+		stylesheet_vars[strip(name)] = strip(val) end
 
 	for selectors, block in string.gmatch(css_str, "([^{]+)%s*{(.-)}") do
 		local props = {}
 
 		for name, val in string.gmatch(block, "([%w%-]+)%s*:%s*([^;}]+)") do
-			if startswith(strip(name), "--") then variables[strip(name)] = strip(val)
+			if startswith(strip(name), "--") then stylesheet_vars[strip(name)] = strip(val)
 			else props[strip(name)] = strip(val) end
 		end
 
 		for selector in string.gmatch(selectors, "([^,]+)") do
 			selector = strip(selector)
-			if selector ~= "" and not startswith(selector, "--") then append(rules, { selector = selector, props = props }) end
+			if selector ~= "" and not startswith(selector, "--") then append(stylesheet_rules, { selector = selector, props = props }) end
 		end
 	end
 
 	for _ = 1, MAX_CSSVAR_PASSES do
 		local replaced = false
 
-		for var_name, var_val in pairs(variables) do
-			variables[var_name] = string.gsub(var_val, "var%((%-%-[%w%-]+)%)", function(ref)
-				local value = variables[ref]
-				if value then replaced = true end
-				return value or ("var(" .. ref .. ")")
-			end)
+		for var_name, var_val in pairs(stylesheet_vars) do
+			local val, didReplace = resolve_vars(var_val, stylesheet_vars)
+			stylesheet_vars[var_name] = val; replaced = didReplace or replaced
 		end
-	
+
 		if not replaced then break end
 	end
 
-	for _, rule in ipairs(rules) do
+	for _, rule in ipairs(stylesheet_rules) do
 		for k, v in pairs(rule.props) do
-			rule.props[k] = string.gsub(v, "var%((%-%-[%w%-]+)%)", function(ref)
-				return variables[ref] or ("var(" .. ref .. ")")
-			end)
-		end
-	end
+			rule.props[k] = resolve_vars(v, stylesheet_vars) end end
 
-	return rules, variables
+	return stylesheet_rules, stylesheet_vars
 end
 
 local function matches_selector(node, selector)
@@ -207,12 +211,12 @@ local function specificity(selector)
 	return 1
 end
 
-local function apply_stylesheet(node, rules)
+local function apply_stylesheet(node)
 	local attribs       = {}
 	local specificities = {}
 	local dynamic_attr  = {}
 
-	for _, rule in ipairs(rules) do
+	for _, rule in ipairs(stylesheet_rules) do
 		if not matches_selector(node, rule.selector) then continue end
 		local spec = specificity(rule.selector)
 		local _, pseudo, state_key, state_val = parse_selector(rule.selector)
@@ -249,22 +253,17 @@ end
 
 -- ——— builds ——————————————————————————————————————————
 
-local function parse_props(node, stylesheet_rules)
+local function parse_props(node)
 	local props      = {}
 	local layout     = {}
 	local tween      = {}
 	local transition = {}
 	local dynaStyles = {}
 
-	local attribs, dynamic_attr = node.attrib, {}
-	if stylesheet_rules then attribs, dynamic_attr = apply_stylesheet(node, stylesheet_rules) end
+	local attribs, dynamic_attr = apply_stylesheet(node)
 
 	for k, v in pairs(attribs) do
-		attribs[k] = string.gsub(v, "var%((%-%-[%w%-]+)%)", function(var_name)
-			local replacement = M._variables and M._variables[var_name]
-			return replacement or ("var(" .. var_name .. ")")
-		end)
-	end
+		attribs[k] = resolve_vars(v, stylesheet_vars) end
 
 	for k, v in pairs(attribs) do
 		if k == "class" or k == "className" then continue end
@@ -290,7 +289,7 @@ local function parse_props(node, stylesheet_rules)
 		elseif k == "__source_fragment" then props.__source_fragment = v
 
 		elseif startswith(k, "__") then -- internal metadata, ignore(?)
-		elseif startswith(k, "on") then error("[Rui] Unsupported event: " .. tostring(k))
+		elseif startswith(k, "on") then error("Unsupported event: " .. tostring(k))
 
 		elseif node.tag == "LuaBlock" and k == "key" then props.__luaBlockKey = v
 		else props["__rawprop__" .. k:gsub("^%l", string.upper)] = is_luaexpr(v) and parse_expr(v) or parse_scalar(v) end
@@ -313,10 +312,15 @@ local function parse_props(node, stylesheet_rules)
 		elseif not startswith(k, "on") then
 			table.insert(robloxProps, k:gsub("^%l", string.upper)) end
 
+		local function resolve_and_parse(val)
+			val = resolve_vars(val, stylesheet_vars)
+			return is_luaexpr(val) and parse_expr(val) or parser(val)
+		end
+
 		for _, robloxProp in ipairs(robloxProps) do
 			dynaStyles[robloxProp] = {
-				hover  = dyn.hover and resolve_and_parse(dyn.hover.val, parser) or nil,
-				active = dyn.active and resolve_and_parse(dyn.active.val, parser) or nil,
+				hover  = dyn.hover and resolve_and_parse(dyn.hover.val) or nil,
+				active = dyn.active and resolve_and_parse(dyn.active.val) or nil,
 				states = nil,
 			}
 			if dyn.states then
@@ -325,9 +329,8 @@ local function parse_props(node, stylesheet_rules)
 					table.insert(statesList, {
 						key     = st.key,
 						val     = st.val,
-						propVal = resolve_and_parse(st.propVal, parser),
-					})
-				end
+						propVal = resolve_and_parse(st.propVal),
+					}) end
 				dynaStyles[robloxProp].states = statesList
 	end end end
 
@@ -342,7 +345,7 @@ end
 local function build(node)
 	local obj = {
 		type     = node.tag,
-		props    = parse_props(node, M._stylesheet_rules),
+		props    = parse_props(node),
 		children = {},
 	}
 
@@ -362,9 +365,6 @@ end
 local idc            = 0
 local idb            = {}
 local used_names	 = {}
-local block_counter  = 0
-local block_sources  = {}
-local action_names   = {}
 
 local function alloc_obj(node, suffix)
 	suffix       = suffix or ""
@@ -465,7 +465,7 @@ local function skip_quoted(text, pos, quote)
 		else i += 1 end
 
 	end
-	error("[Rui] Unterminated quoted string in loose Lua block")
+	error("Unterminated quoted string in loose Lua block")
 end
 
 local function find_blockclose(text, start_pos)
@@ -508,6 +508,9 @@ end
 
 -- ——— luax preprocessing main —————————————————————————————
 
+local block_counter  = 0
+local block_sources  = {}
+
 local function preprocess_luaxml(src)
 	src = string.gsub(src, "<>", "<Fragment>")
 	src = string.gsub(src, "</>", "</Fragment>")
@@ -517,10 +520,7 @@ local function preprocess_luaxml(src)
 
 	while i <= #src do
 		local open_pos = string.find(src, "{{", i, true)
-		if not open_pos then
-			append(out, string.sub(src, i))
-			break
-		end
+		if not open_pos then append(out, string.sub(src, i)); break end
 
 		append(out, string.sub(src, i, open_pos - 1))
 
@@ -776,7 +776,7 @@ local function compile_func(code, indent, scope_var, statement, suffix, scope_lo
 			append(lines, indent .. "    local " .. name .. " = scope and scope[" .. str(name) .. "] or nil") end
 	end
 
-	for _, name in ipairs(action_names) do
+	for name in pairs(current_app.table.actions or {}) do
 		if uses_identifier(code, name) then
 			append(lines, indent .. "    local " .. name .. " = function(_payload) return invokeAction(" .. str(name) .. ", scope, _payload, _event) end") end
 	end
@@ -863,12 +863,6 @@ local function compile_rawprop(var, attr_name, value, indent, scope_var, scope_l
 	return lines
 end
 
-local function compile_visiblebind(node, var, indent, scope_var, scope_locals)
-	local visible = node.props.Visible
-	if visible == nil then return {} end
-	return compile_computedprop(var, "Visible", visible.code, indent, scope_var, scope_locals)
-end
-
 -- ——— element compilers ———————————————————————————————————
 
 -- / forward declr
@@ -898,7 +892,7 @@ function compile_if(child, parent_var, depth, scope_var, scope_locals, current_c
 	local cond = child.props.__if
 	local cond_code = is_expr(cond) and cond.code or tostring(cond)
 
-	local selector_lines, selector_var = compile_func(cond_code .. ' and "cond_body" or nil', indent, scope_var, false, "cond_select", scope_locals)
+	local selector_lines, selector_var = compile_func("(" .. cond_code .. ') and "cond_body" or nil', indent, scope_var, false, "cond_select", scope_locals)
 	local factories_table = alloc_name(child, "condFactories")
 	local lines = {}
 
@@ -1128,7 +1122,7 @@ function compile_fragchilds(fragment_src, depth, scope_var, scope_locals, curren
 	if fragment_src == "" then return {}, {} end
 
 	local wrapped_src   = "<Fragment>\n" .. fragment_src .. "\n</Fragment>"
-	local fragment_tree = build(M._xml_parser.fromstring(preprocess_luaxml(wrapped_src)))
+	local fragment_tree = build(xml_parser.fromstring(preprocess_luaxml(wrapped_src)))
 
 	local roots         = {}
 	local lines         = {}
@@ -1273,8 +1267,8 @@ function compile_node(node, depth, scope_var, scope_locals, current_component)
 	if node.props.__id then
 		append(lines, indent .. "registerElementId(" .. str(node.props.__id) .. ", " .. var .. ")") end
 
-	if node.props.__name and M._app_module then
-		local source_module = M._app_module
+	if node.props.__name and current_app.module then
+		local source_module = current_app.module
 
 		if current_component then
 			local target = string.lower(current_component)
@@ -1382,19 +1376,6 @@ local function resolve_includes(ui_text, fragments)
 	end
 end
 
-local function load_uiapp(app)
-	if type(app) ~= "table" then
-		error("app must be a table") end
-
-	if type(app.ui) ~= "string" then
-		error(string.format("app.ui must be a string, is a %s", type(app.ui))) end
-
-	if type(app.fragments or {}) ~= "table" then
-		error("app.fragments must be a table when provided") end
-
-	return resolve_includes(app.ui, app.fragments or {})
-end
-
 -- ——— main entry ——————————————————————————————————————————
 
 local function getHeader()
@@ -1452,36 +1433,22 @@ local function getFooter(root_vars, auto_mount)
 	return lines
 end
 
-function M.generate_from_app(app, app_module, runtime_text, auto_mount)
-	if type(runtime_text) == "function" then runtime_text = runtime_text() end
+function M.generate_from_app(app, app_module, runtime, auto_mount)
+	if type(app) ~= "table" then error("app must be a table, is a " .. type(app)) end
+	if type(app.ui) ~= "string" then error("app.ui must be a string, is a " .. type(app.ui)) end
+	if app.state and type(app.state) ~= "table" then error("app.state must be a table, is a " .. type(app.state)) end
+	if app.init and type(app.init) ~= "function" then error("app.init must be a function, is a " .. type(app.init)) end
+	if app.actions and type(app.actions) ~= "table" then error("app.actions must be a table, is a " .. type(app.actions)) end
+	if app.fragments and type(app.fragments) ~= "table" then error("app.fragments must be a table, is a " .. type(app.fragments)) end
+	if app.stylesheet and type(app.stylesheet) ~= "string" then error("app.stylesheet must be a string, is a " .. type(app.stylesheet)) end
 
-	if type(runtime_text) ~= "string" then
-		error("runtime_text must be a string or a zero-argument function returning a string") end
+	current_app = { table = app, module = app_module }
 
-	if type(xml_parser) ~= "table" then
-		error("xml_parser must be the xml.lua module table") end
-
-	action_names = {}
-	if type(app.actions) == "table" then
-		for name in pairs(app.actions) do
-			append(action_names, name)
-		end
-		table.sort(action_names)
-	end
-
-	M._xml_parser = xml_parser
-	local rules, variables = parse_stylesheet(app.stylesheet or app.css)
-	M._stylesheet_rules = rules
-	M._variables = variables
-	M._app_module = app_module
-
-	local src = preprocess_luaxml(load_uiapp(app))
+	parse_stylesheet(app.stylesheet)
+	local src = preprocess_luaxml(resolve_includes(app.ui, app.fragments or {}))
 	local root = build(xml_parser.fromstring(src))
 
 	local lines, root_vars = compile_root(root)
-	M._stylesheet_rules = nil
-	M._variables = nil
-	M._app_module = nil
 
 	local body   = table.concat(lines, "\n")
 	local header = table.concat(getHeader(), "\n")
@@ -1497,7 +1464,7 @@ function M.generate_from_app(app, app_module, runtime_text, auto_mount)
 		"-- Runtime",
 		"-- ==================================================",
 		"",
-		runtime_text:gsub("^%s+", ""):gsub("%s+$", ""),
+		runtime,
 		"",
 
 		"-- ==================================================",
@@ -1515,11 +1482,5 @@ function M.generate_from_app(app, app_module, runtime_text, auto_mount)
 
 	return { code = lua, roots = root_vars }
 end
-
-M.load_ui_from_app       = load_uiapp
-M.preprocess_luax_blocks = preprocess_luaxml
-M.parse_bool             = parse_bool
-M.parse_scale_pair       = parse_scalepair 
-M.parse_rgb              = parse_rgb
 
 return M

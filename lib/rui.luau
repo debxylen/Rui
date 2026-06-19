@@ -8,11 +8,13 @@ local Rui = {}
 
 -- ——— helpers ———————————————————————————————————————————
 
-local function resolveAppTable(app)
-	if typeof(app) == "Instance" and app:IsA("ModuleScript") then return require(app :: Instance) end
-	if type(app) == "table" then return app end
+local function try(fn, ...)
+	local args = table.pack(...)
 
-	error("Rui expected an app ModuleScript or app table")
+	return xpcall(
+		function() return fn(table.unpack(args, 1, args.n)) end,
+		function(err) return debug.traceback(tostring(err), 2) end
+	)
 end
 
 local function createMountHandle(roots)
@@ -26,8 +28,8 @@ local function createMountHandle(roots)
 		end
 
 		if type(self.roots.cleanup) == "function" then
-			local ok, err = pcall(self.roots.cleanup)
-			if not ok then warn("[Rui] Cleanup error: " .. tostring(err)) end
+			local ok, result = try(self.roots.cleanup)
+			if not ok then warn("[Rui] Cleanup error: " .. tostring(result)) end
 		end
 
 		self.roots = nil
