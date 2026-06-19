@@ -1,7 +1,7 @@
 local DEBUG = plugin:GetSetting("RUI_DEBUG") or false
 
 local RunService = game:GetService("RunService")
-if not RunService:IsStudio() then return end
+if RunService:IsRunning() then return end
 
 local CS = game:GetService("ChangeHistoryService")
 local HttpService = game:GetService("HttpService")
@@ -17,11 +17,23 @@ local RUI_RAW_BASE_URL = "https://raw.githubusercontent.com/debxylen/Rui/main/li
 
 local RUI_MODULE = nil
 
+local RUI_SELF_CTX = nil
+local defferedUI = nil
+
 local TEMP_FOLDER = RS:FindFirstChild("__RUI_TEMP") or Instance.new("Folder")
 TEMP_FOLDER.Name = "__RUI_TEMP"
 
 local _print = print
 local function print(...) if DEBUG then _print(...) end end
+
+local function try(fn, ...)
+	local args = table.pack(...)
+
+	return xpcall(
+		function() return fn(table.unpack(args, 1, args.n)) end,
+		function(err) return err:sub(1, #"[Rui] ") == "[Rui] " and err:sub(#"[Rui] " + 1) or debug.traceback(tostring(err), 2) end
+	)
+end
 
 -- ——— reloads ————————————————————————————————————————————
 
@@ -56,7 +68,7 @@ local function safeRequire(module)
 		error("Failed to clone Rui app module")
 	end
 
-	local ok, result = pcall(require, clone)
+	local ok, result = try(require, clone)
 	package:Destroy()
 
 	if not ok then
@@ -77,8 +89,7 @@ local function freshRequireRui(ruiModule)
 	end
 
 	local clonedRui = TEMP_FOLDER:FindFirstChild(ruiModule.Name)
-	if not clonedRui then
-		error("Failed to clone Rui module") end
+	if not clonedRui then error("Failed to clone Rui module") end
 
 	return require(clonedRui)
 end
@@ -108,20 +119,12 @@ local function mountPreview(compiledModule, ruiInstance)
 
 	local existing = previewHandles[compiledModule.Name]
 	if existing then
-		pcall(function()
-			existing:unmount()
-		end)
+		try(function() existing:unmount() end)
 		previewHandles[compiledModule.Name] = nil
 	end
 
-	local ok, handle = pcall(function()
-		return ruiInstance.mount(compiledModule)
-	end)
-
-	if not ok then
-		warn("[Rui] Preview mount failed:", handle)
-		return
-	end
+	local ok, handle = try(ruiInstance.mount, compiledModule)
+	if not ok then warn("[Rui] Preview mount for " .. compiledModule.Name .. "failed:", handle) return end
 
 	previewHandles[compiledModule.Name] = handle
 	print("[Rui] Preview mounted:", compiledModule.Name)
@@ -160,15 +163,22 @@ local function ensureBootstrap()
 	local source = [[
 local RS = game:GetService("ReplicatedStorage")
 
-local compiledFolder = RS:WaitForChild("__RUI_COMPILED")
+local compiledFolder = RS:WaitForChild("]] .. OUTPUT_FOLDER_NAME .. [[")
 local rui = require(RS:WaitForChild("Rui"):WaitForChild("rui"))
+
+local function try(fn, ...)
+	local args = table.pack(...)
+
+	return xpcall(
+		function() return fn(table.unpack(args, 1, args.n)) end,
+		function(err) return debug.traceback(tostring(err), 2) end
+	)
+end
 
 local function mount(mod)
 	if not mod:IsA("ModuleScript") then return end
 
-	local ok, result = pcall(function()
-		return rui.mount(mod)
-	end)
+	local ok, result = try(rui.mount, mod)
 
 	if ok then print("[RUI] Mounted: " .. mod.Name)
 	else warn("[RUI] Failed to mount " .. mod.Name .. ": " .. tostring(result)) end
@@ -229,22 +239,17 @@ end
 
 -- ——— compiles ———————————————————————————————————————————
 
+local compiling = false
+
 local function compileApp(appModule)
 	local ruiModule = resolveRuiModule()
 	if not ruiModule then error("[Rui] Rui is not installed") end
 
 	local successfulRui = freshRequireRui(ruiModule)
+	local appTable = safeRequire(appModule)
 
-	local ok, result = pcall(function()
-		local appTable = safeRequire(appModule)
-		return successfulRui.compile(appTable, appModule)
-	end)
-
-	if not ok then
-		warn("[Rui] Compile error in", appModule.Name, result)
-		warn("\n", debug.traceback())
-		return
-	end
+	local ok, result = try(successfulRui.compileResolved, appTable, appModule)
+	if not ok then error("[Rui] Compile error in " .. appModule.Name .. ": " .. result, 0) end
 
 	local outFolder = getOutputFolder()
 
@@ -256,7 +261,7 @@ local function compileApp(appModule)
 	mod = Instance.new("ModuleScript")
 	mod.Name = appModule.Name
 	mod.Parent = outFolder
-	mod.Source = result
+	mod.Source = result.code
 
 	CS:SetWaypoint("After app update")
 
@@ -272,11 +277,10 @@ local function compileAll()
 	end
 end
 
-local compiling = false
 local function scheduleCompile()
 	if not resolveRuiModule() then return end
-
 	if not autoCompileEnabled then return end
+
 	if compiling then return end
 	compiling = true
 
@@ -286,11 +290,26 @@ local function scheduleCompile()
 	end)
 end
 
+local function removeCompiled(appName)
+	local outFolder = getOutputFolder()
+
+	local compiled = outFolder:FindFirstChild(appName)
+	if compiled then compiled:Destroy() end
+
+	local handle = previewHandles[appName]
+	if handle then
+		try(function() handle:unmount() end)
+		previewHandles[appName] = nil
+	end
+
+	print("[Rui] Removed:", appName)
+end
+
 -- ——— rui setups —————————————————————————————————————————
 
 local function install()
 	print("[Rui] Installing...")
-	
+
 	local ruiFolder = RS:FindFirstChild("Rui")
 	if not ruiFolder then
 		ruiFolder = Instance.new("Folder")
@@ -302,12 +321,8 @@ local function install()
 		local moduleName = string.gsub(filename, "%.luau$", "")
 		local url = RUI_RAW_BASE_URL .. filename .. "?t=" .. HttpService:GenerateGUID(false)
 
-		local ok, source = pcall(function()
-			return HttpService:GetAsync(url)
-		end)
-
-		if not ok then
-			error("[Rui] Failed to fetch " .. filename .. ": " .. tostring(source)) end
+		local ok, source = try(function() return HttpService:GetAsync(url) end)
+		if not ok then error("[Rui] Failed to fetch " .. filename .. ": " .. tostring(source), 0) end
 
 		local mod = ruiFolder:FindFirstChild(moduleName)
 		if mod and not mod:IsA("ModuleScript") then
@@ -330,6 +345,8 @@ local function install()
 	ensureBootstrap()
 	ensureServerCleanup()
 	resolveRuiModule()
+
+	if defferedUI then defferedUI() end
 end
 
 -- ——— plugin ui ——————————————————————————————————————————
@@ -424,6 +441,7 @@ title.TextSize = 16
 local statusLabel = makeLabel("", 36, Color3.fromRGB(180, 190, 205))
 local autoCompileButton
 local compileAllButton
+local debugButton
 local init
 
 local function refreshUi()
@@ -434,7 +452,7 @@ local function refreshUi()
 			table.insert(apps, child.Name)
 		end
 	end
-	
+
 	if debugButton then
 		debugButton.Text = DEBUG and "Debug: ON" or "Debug: OFF"
 		debugButton.BackgroundColor3 = Color3.fromRGB(48, 48, 52)
@@ -498,6 +516,7 @@ local function hookAppModule(mod)
 		if prop == "Source" then
 			print("[Rui] App changed:", mod.Name)
 			scheduleCompile()
+			refreshUi()
 		end
 	end)
 end
@@ -514,6 +533,7 @@ end
 
 -- ——— selection sync ——————————————————————————————————————
 
+local changedInstances = {}
 local selectionConnections = {}
 local selectionChangedConn
 
@@ -576,10 +596,113 @@ local function onSelectionChanged()
 
 	for _, instance in ipairs(Selection:Get()) do
 		if instance:IsA("GuiObject") and instance:GetAttribute("RuiSourceModule") and instance:GetAttribute("RuiElementName") then
-			table.insert(selectionConnections, instance:GetPropertyChangedSignal("Position"):Connect(function() onPropertyTweak(instance, "Position") end))
-			table.insert(selectionConnections, instance:GetPropertyChangedSignal("Size"):Connect(function() onPropertyTweak(instance, "Size") end))
+			table.insert(selectionConnections, instance:GetPropertyChangedSignal("Position"):Connect(function() changedInstances[instance] = true; RUI_SELF_CTX.setState("show", true) end))
+			table.insert(selectionConnections, instance:GetPropertyChangedSignal("Size"):Connect(function() changedInstances[instance] = true; RUI_SELF_CTX.setState("show", true) end))
 		end
 	end
+end
+
+local function syncProperties(ctx)
+	for instance, _ in pairs(changedInstances) do
+		onPropertyTweak(instance, "Size")
+		onPropertyTweak(instance, "Position")
+	end
+	table.clear(changedInstances)
+	ctx.setState("show", false)
+end
+
+local floatUI = [[
+<ScreenGui name="RuiPluginFloat">
+    <Frame
+        name="FloatingRoot"
+        size="1,1"
+        position="0,0"
+        backgroundTransparency="1"
+        active="false"
+    >
+        <Frame
+            name="FloatingOuter"
+            size="0.34,0.08"
+            anchorPoint="0.5,1"
+            position="0.5,1"
+            backgroundTransparency="1"
+			padding="5"
+			if="{ state.show }"
+			transition="slideUp"
+			transitionTime="0.2"
+        >
+            <Frame
+                name="Floating"
+                size="1,1"
+                direction="row"
+                backgroundColor="24,24,28"
+                borderSizePixel="0"
+                cornerRadius="8"
+				padding="5"
+            >
+                <TextLabel
+                    name="Status"
+                    size="0.69,1"
+                    backgroundTransparency="1"
+                    text="Unsynced Rui Changes"
+                    textColor="230,230,235"
+                    textScaled="true"
+                    textXAlignment="Left"
+                />
+
+                <TextButton
+                    name="SyncButton"
+                    size="0.25,1"
+                    backgroundColor="53,78,118"
+                    borderSizePixel="0"
+                    text="Sync"
+                    textColor="255,255,255"
+                    textScaled="true"
+					cornerRadius="8"
+					onClick="sync"
+                />
+
+                <TextButton
+                    name="CloseButton"
+                    size="0.05,1"
+                    backgroundTransparency="1"
+                    text="X"
+                    textColor="120,120,120"
+                    textScaled="true"
+					onClick="close"
+					textXAlignment="Right"
+                />
+            </Frame>
+        </Frame>
+    </Frame>
+</ScreenGui>
+]]
+
+local setupUI
+
+function setupUI()
+	local ruiModule = resolveRuiModule()
+	if not ruiModule then defferedUI = setupUI; return end
+
+	local successfulRui = freshRequireRui(ruiModule)
+
+	local appTable = {
+		ui = floatUI,
+		state = { show = false },
+		init = function(ctx) RUI_SELF_CTX = ctx end,
+		actions = { sync = syncProperties, close = function(ctx) ctx.setState("show", false) end },
+	}
+
+	local ok, source = try(successfulRui.compileTable, appTable, false)
+	if not ok then error("[Rui] Plugin compile error: " .. tostring(source), 0) end
+
+	local existing = game:GetService("CoreGui"):FindFirstChild("RuiPluginFloat")
+	if existing then existing:Destroy() end
+
+	local ok, appRoot = try(loadstring(source.code))
+	if not ok then error("[Rui] Plugin UI creation error: " .. tostring(appRoot), 0) end
+
+	appRoot[1].Parent = game:GetService("CoreGui")
 end
 
 -- ——— init ———————————————————————————————————————————————
@@ -612,6 +735,14 @@ function init()
 		if child:IsA("ModuleScript") then
 			hookAppModule(child)
 			scheduleCompile()
+			refreshUi()
+		end
+	end)
+
+	appsFolder.ChildRemoved:Connect(function(child)
+		if child:IsA("ModuleScript") then
+			removeCompiled(child.Name)
+			refreshUi()
 		end
 	end)
 
@@ -637,6 +768,8 @@ function init()
 	ensureBootstrap()
 	ensureServerCleanup()
 	compileAll()
+
+	setupUI()
 
 	if not selectionChangedConn then
 		selectionChangedConn = Selection.SelectionChanged:Connect(onSelectionChanged) end
