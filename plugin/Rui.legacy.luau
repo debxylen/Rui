@@ -12,7 +12,7 @@ local APPS_FOLDER_NAME = "RuiApp"
 local OUTPUT_FOLDER_NAME = "__RUI_COMPILED"
 local BOOTSTRAP_NAME = "__RUI_BOOTSTRAP"
 local SERVER_CLEANUP_NAME = "__RUI_PREVIEW_CLEANUP"
-local RUI_MODULE_FILENAMES = { "core.luau", "rui.luau", "runtime.luau", "xml.luau", "std.luau", "inliner.luau" }
+local RUI_MODULE_FILENAMES = { "core.luau", "rui.luau", "runtime.luau", "xml.luau", "std.luau", "factory.luau" }
 local RUI_RAW_BASE_URL = "https://raw.githubusercontent.com/debxylen/Rui/main/lib/"
 
 local RUI_MODULE = nil

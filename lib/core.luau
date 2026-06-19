@@ -1,5 +1,6 @@
 local M   = {} :: any
 local std = require(script.Parent.std)
+local xml_parser = require(script.Parent.xml)
 
 local append, extend, strip, lower, str, charAt = std.append, std.extend, std.strip, std.lower, std.str, std.charAt
 local startswith, endswith = std.startswith, std.endswith
@@ -1412,8 +1413,9 @@ local function getHeader()
 	return lines
 end
 
-local function getFooter(root_vars)
+local function getFooter(root_vars, auto_mount)
 	if #root_vars == 0 then return { 'return { cleanup = _cleanup_fn }' } end
+	if not auto_mount then return { 'return { cleanup = _cleanup_fn, ' .. table.concat(root_vars, ", ") .. '}' } end
 
 	local indent = string.rep("    ", 1)
 
@@ -1450,7 +1452,7 @@ local function getFooter(root_vars)
 	return lines
 end
 
-function M.generate_from_app(app, runtime_text, xml_parser, app_module)
+function M.generate_from_app(app, app_module, runtime_text, auto_mount)
 	if type(runtime_text) == "function" then runtime_text = runtime_text() end
 
 	if type(runtime_text) ~= "string" then
@@ -1483,7 +1485,7 @@ function M.generate_from_app(app, runtime_text, xml_parser, app_module)
 
 	local body   = table.concat(lines, "\n")
 	local header = table.concat(getHeader(), "\n")
-	local footer = table.concat(getFooter(root_vars), "\n")
+	local footer = table.concat(getFooter(root_vars, auto_mount), "\n")
 
 	local lua = table.concat({
 		"-- ==================================================",
@@ -1511,7 +1513,7 @@ function M.generate_from_app(app, runtime_text, xml_parser, app_module)
 		footer,
 	}, "\n")
 
-	return lua, root_vars
+	return { code = lua, roots = root_vars }
 end
 
 M.load_ui_from_app       = load_uiapp

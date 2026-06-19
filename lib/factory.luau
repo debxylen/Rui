@@ -1,9 +1,36 @@
 local std = require(script.Parent.std)
 local str = std.str
 
-local Inliner = {}
+local tableAppCounter = 0
+
+local M = {}
 
 -- ——— helpers ————————————————————————————————————————————
+
+local function registerTableApp(app)
+	local registry = rawget(_G, "__RUI_TABLE_APPS")
+	if type(registry) ~= "table" then
+		registry = {}
+		rawset(_G, "__RUI_TABLE_APPS", registry)
+	end
+
+	tableAppCounter += 1
+	local id = "rui_tableapp_" .. tableAppCounter
+	registry[id] = app
+	return id
+end
+
+local function buildTableAppFactory(appTable)
+	local id = registerTableApp(appTable)
+	return table.concat({
+		"(function()",
+		"	local registry = rawget(_G, \"__RUI_TABLE_APPS\") or {}",
+		"	local app = registry[" .. string.format("%q", id) .. "]",
+		"	if type(app) ~= \"table\" then error(\"[Rui] Missing registered table app: " .. id .. "\") end",
+		"	return app",
+		"end)",
+	}, "\n")
+end
 
 local function splitPath(path)
 	local out = {}
@@ -70,10 +97,10 @@ end
 
 -- ——— api ————————————————————————————————————————————————
 
-function Inliner.buildInlineAppFactory(appModule)
-	if typeof(appModule) ~= "Instance" or not appModule:IsA("ModuleScript") then
-		error("Rui standalone compile requires an app ModuleScript")
-	end
+function M.buildAppFactory(app)
+	if type(app) == "table" then return buildTableAppFactory(app) end
+
+	local appModule = app
 
 	local appRoot = appModule.Parent
 	if not appRoot then error("Rui app ModuleScript must have a parent") end
@@ -180,4 +207,4 @@ function Inliner.buildInlineAppFactory(appModule)
 	return table.concat(lines, "\n")
 end
 
-return Inliner
+return M
