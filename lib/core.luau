@@ -1455,6 +1455,9 @@ function M.generate_from_app(app, app_module, runtime, auto_mount)
 	local footer = table.concat(getFooter(root_vars, auto_mount), "\n")
 
 	local lua = table.concat({
+		"return function()",
+		"",
+
 		"-- ==================================================",
 		"-- INIT",
 		"-- ==================================================",
@@ -1478,6 +1481,9 @@ function M.generate_from_app(app, app_module, runtime, auto_mount)
 		"-- ==================================================",
 		"",
 		footer,
+
+		"",
+		"end"
 	}, "\n")
 
 	return { code = lua, roots = root_vars }

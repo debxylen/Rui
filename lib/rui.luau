@@ -5,6 +5,7 @@ local Factory       = require(script.Parent.factory)
 local CollectionService = game:GetService("CollectionService")
 
 local Rui = {}
+local Handles = {}
 
 -- ——— helpers ———————————————————————————————————————————
 
@@ -17,7 +18,8 @@ local function try(fn, ...)
 	)
 end
 
-local function createMountHandle(roots)
+local function createMountHandle(roots, module)
+	if Handles[module] then error("Handle for module " .. module.Name .. " already exists") end
 	local handle = { roots = roots or {} }
 
 	function handle:unmount()
@@ -33,8 +35,10 @@ local function createMountHandle(roots)
 		end
 
 		self.roots = nil
+		Handles[module] = nil
 	end
 
+	Handles[module] = handle
 	return handle
 end
 
@@ -75,13 +79,20 @@ function Rui.mount(compiledModule)
 	if typeof(compiledModule) ~= "Instance" or not compiledModule:IsA("ModuleScript") then
 		error("Rui.mount expected a ModuleScript; use loadstring() for in-memory compiled source.") end
 
-	local result = require(compiledModule)
-	return createMountHandle(result)
+	local result = require(compiledModule)()
+	return createMountHandle(result, compiledModule)
 end
 
 function Rui.unmount(handle)
 	if type(handle) == "table" and type(handle.unmount) == "function" then handle:unmount()
 	else error("Rui.unmount expected a mount handle") end
+end
+
+function Rui.getHandle(module)
+	if typeof(module) ~= "Instance" or not module:IsA("ModuleScript") then
+		error("Rui.getHandle expected a ModuleScript") end
+
+	return Handles[module]
 end
 
 function Rui.getById(id)

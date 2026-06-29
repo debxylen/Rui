@@ -699,7 +699,7 @@ function setupUI()
 	local existing = game:GetService("CoreGui"):FindFirstChild("RuiPluginFloat")
 	if existing then existing:Destroy() end
 
-	local ok, appRoot = try(loadstring(source.code))
+	local ok, appRoot = try(loadstring(source.code)())
 	if not ok then error("[Rui] Plugin UI creation error: " .. tostring(appRoot), 0) end
 
 	appRoot[1].Parent = game:GetService("CoreGui")
