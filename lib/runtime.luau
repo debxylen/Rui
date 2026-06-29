@@ -24,6 +24,7 @@ local elementsById      = {}
 local tweenInfos        = setmetatable({}, { __mode = "k" })
 local activeTweens      = setmetatable({}, { __mode = "k" })
 local transitionInfos   = setmetatable({}, { __mode = "k" })
+local exitingInstances  = setmetatable({}, { __mode = "k" })
 
 -- ——— helpers ———————————————————————————————————————————
 
@@ -94,6 +95,8 @@ local function tweenProperties(instance, tweenInfo, goals)
 end
 
 local function applyPropertyValue(instance, prop, value)
+	if exitingInstances[instance] then return end
+
 	local info = tweenInfos[instance]
 	if not info or not canTweenValue(value) then instance[prop] = value; return end
 
@@ -116,15 +119,19 @@ local function getTransitionGoals(instance, preset)
 	local okPos,  pos  = pcall(function() return instance.Position end)
 	local okGrp,  grp  = pcall(function() return instance.GroupTransparency end)
 
-	if preset == "fade" or preset == "modal" or preset == "toast" then
-		if okGrp then setPair("GroupTransparency", grp, 1)
+	if (preset:match("^fade") and preset ~= "fadeOut") or preset == "modal" or preset == "toast" then
+		if okGrp 	  then setPair("GroupTransparency", grp, 1)
 		else
 			if okBg   then setPair("BackgroundTransparency", bg, 1) end
-			if okText then setPair("TextTransparency", text, 1) end
-		end
-	end
+			if okText then setPair("TextTransparency", text, 1) end end end
 
-	if preset == "slideUp" or preset == "modal" then
+	if preset == "fadeOut" then
+		if okGrp 	  then exit.GroupTransparency = 1
+		else
+			if okBg   then exit.BackgroundTransparency = 1 end
+			if okText then exit.TextTransparency = 1 end end
+
+	elseif preset == "slideUp" or preset == "fadeUp" or preset == "modal" then
 		if okPos then setPair("Position", pos, UDim2.new(pos.X.Scale, pos.X.Offset, pos.Y.Scale + 0.04, pos.Y.Offset + 24)) end
 
 	elseif preset == "slideDown" or preset == "fadeDown" then
@@ -134,10 +141,7 @@ local function getTransitionGoals(instance, preset)
 		if okPos then setPair("Position", pos, UDim2.new(pos.X.Scale + 0.04, pos.X.Offset + 24, pos.Y.Scale, pos.Y.Offset)) end
 
 	elseif preset == "slideRight" or preset == "fadeRight" then
-		if okPos then setPair("Position", pos, UDim2.new(pos.X.Scale - 0.04, pos.X.Offset - 24, pos.Y.Scale, pos.Y.Offset)) end
-
-	elseif preset == "fadeUp" then
-		if okPos then setPair("Position", pos, UDim2.new(pos.X.Scale, pos.X.Offset, pos.Y.Scale + 0.04, pos.Y.Offset + 24)) end end
+		if okPos then setPair("Position", pos, UDim2.new(pos.X.Scale - 0.04, pos.X.Offset - 24, pos.Y.Scale, pos.Y.Offset)) end end
 
 	return hasAny and enter or nil, exit
 end
@@ -187,8 +191,13 @@ function playExitTransitions(roots, onDone)
 	local played  = false
 
 	for _, ins in ipairs(targets) do
-		local cfg         = transitionInfos[ins]
-		local _, exit     = getTransitionGoals(ins, cfg.preset)
+		exitingInstances[ins] = true
+		for _, son in ipairs(ins:GetDescendants()) do
+			exitingInstances[son] = true end
+
+		local cfg     = transitionInfos[ins]
+		local _, exit = getTransitionGoals(ins, cfg.preset)
+
 		if next(exit) then
 			played  = true
 			maxTime = math.max(maxTime, cfg.tweenInfo.Time)
@@ -424,7 +433,9 @@ end
 
 function updateComputed(binding)
 	if not binding.instance then return end
+	if exitingInstances[binding.instance] then return end
 	if binding.ready and not binding.instance.Parent then return end
+
 	local ok, val = pcall(binding.computer, binding.scope)
 	if ok then applyPropertyValue(binding.instance, binding.propName, val)
 	else warn("Computed failed for " .. tostring(binding.propName) .. ": " .. tostring(val)) end
