@@ -3,6 +3,7 @@ local DEBUG = plugin:GetSetting("RUI_DEBUG") or false
 local RunService = game:GetService("RunService")
 if RunService:IsRunning() then return end
 
+local ScriptEdit = game:GetService("ScriptEditorService")
 local CS = game:GetService("ChangeHistoryService")
 local HttpService = game:GetService("HttpService")
 local RS = game:GetService("ReplicatedStorage")
@@ -31,7 +32,7 @@ local function try(fn, ...)
 
 	return xpcall(
 		function() return fn(table.unpack(args, 1, args.n)) end,
-		function(err) return err:sub(1, #"[Rui] ") == "[Rui] " and err:sub(#"[Rui] " + 1) or debug.traceback(tostring(err), 2) end
+		function(err) err = tostring(err); return err:sub(1, #"[Rui] ") == "[Rui] " and err:sub(#"[Rui] " + 1) or debug.traceback(err, 2) end
 	)
 end
 
@@ -241,6 +242,11 @@ end
 
 local compiling = false
 
+local function writeLargeSource(targetScript, codeString)
+    local success, err = try(function() ScriptEdit:UpdateSourceAsync(targetScript, function() return codeString end) end)
+    if not success then warn("[Rui] Failed to write UI source code for " .. targetScript:GetFullName() .. ": " .. tostring(err))  end
+end
+
 local function compileApp(appModule)
 	local ruiModule = resolveRuiModule()
 	if not ruiModule then error("[Rui] Rui is not installed") end
@@ -261,7 +267,9 @@ local function compileApp(appModule)
 	mod = Instance.new("ModuleScript")
 	mod.Name = appModule.Name
 	mod.Parent = outFolder
-	mod.Source = result.code
+
+	if #result.code < 200000 then mod.Source = result.code
+	else writeLargeSource(mod, result.code) end
 
 	CS:SetWaypoint("After app update")
 
