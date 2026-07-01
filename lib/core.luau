@@ -305,6 +305,10 @@ local function parse_props(node)
 
 		elseif k == "__source_fragment" then props.__source_fragment = v
 
+		elseif startswith(k, ":")  then
+			if not props.__rawbinds then props.__rawbinds = {} end
+			append(props.__rawbinds, is_luaexpr(v) and v:sub(2, -2) or v)
+
 		elseif startswith(k, "__") then -- internal metadata, ignore(?)
 		elseif startswith(k, "on") then error("Unsupported event: " .. tostring(k))
 
@@ -783,7 +787,7 @@ local function compile_func(code, indent, scope_var, statement, suffix, scope_lo
 	local fn_var = suffix .. "_" .. tostring(idc + 1)
 	idc += 1
 
-	local lines = { indent .. "local " .. fn_var .. " = function(_scope, _event)" }
+	local lines = { indent .. "local " .. fn_var .. " = function(_scope, _event, _self)" }
 	if scope_var ~= nil then append(lines, indent .. "    local scope = _scope or " .. scope_var)
 	else append(lines, indent .. "    local scope = _scope")
 	end
@@ -1132,6 +1136,21 @@ local function compile_events(node, var, indent, scope_var, scope_locals)
 	return lines
 end
 
+local function compile_rawbinds(node, var, indent, scope_var, scope_locals)
+	local binds = node.props.__rawbinds
+	if not binds then return {} end
+
+	local lines = {}
+	for _, code in ipairs(binds) do
+		local wrapped = "local self = _self\n" .. code
+		local fn_lines, fn_var = compile_func(wrapped, indent, scope_var, true, "rawbind", scope_locals)
+
+		extend(lines, fn_lines)
+		append(lines, indent .. fn_var .. "(" .. (scope_var or "nil") .. ", nil, " .. var .. ")")
+	end
+	return lines
+end
+
 local function compile_textbind(node, var, indent, scope_var, scope_locals)
 	local text = node.props.Text
 	if is_expr(text) then return compile_computedprop(var, "Text", text.code, indent, scope_var, scope_locals) end
@@ -1359,6 +1378,7 @@ function compile_node(node, depth, scope_var, scope_locals, current_component)
 	extend(lines, compile_layout(node, var, indent))
 	extend(lines, compile_corner(node, var, indent, scope_var, scope_locals))
 	extend(lines, compile_events(node, var, indent, scope_var, scope_locals))
+	extend(lines, compile_rawbinds(node, var, indent, scope_var, scope_locals))
 	extend(lines, compute_dynastyles(node, var, indent, scope_var, scope_locals))
 
 	if node.props.__id then
