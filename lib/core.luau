@@ -227,10 +227,21 @@ local function specificity(selector)
 	return 1
 end
 
+local function get_rprop(css_key)
+	local setter = PROP_SETTERS[css_key]
+	if setter then return setter[1] end
+
+	if css_key == "transparency" then
+		return "BackgroundTransparency" end
+
+	return css_key
+end
+
 local function apply_stylesheet(node)
 	local attribs       = {}
 	local specificities = {}
 	local dynamic_attr  = {}
+	local winning_keys  = {}
 
 	for _, rule in ipairs(stylesheet_rules) do
 		if not matches_selector(node, rule.selector) then continue end
@@ -239,10 +250,12 @@ local function apply_stylesheet(node)
 
 		for k, v in pairs(rule.props) do
 			if pseudo == nil then
-				if spec >= (specificities[k] or -1) then
-					attribs[k] = v
-					specificities[k] = spec
-				end
+				local rprop = get_rprop(k)
+				if spec < (specificities[rprop] or -1) then continue end
+
+				attribs[k] = v
+				specificities[rprop] = spec
+				winning_keys[rprop] = k
 
 			else
 				if not dynamic_attr[k] then dynamic_attr[k] = {} end
@@ -260,11 +273,21 @@ local function apply_stylesheet(node)
 					dyn.states = dyn.states or {}
 					table.insert(dyn.states, { key = state_key, val = state_val, propVal = v, spec = spec })
 				end
-	end end end
+			end end end
 
-	for k, v in pairs(node.attrib) do attribs[k] = v end
+	for k, v in pairs(node.attrib) do
+		attribs[k] = v
 
-	return attribs, dynamic_attr
+		local rprop = get_rprop(k)
+		specificities[rprop] = 999
+		winning_keys[rprop] = k
+	end
+
+	local clean_attribs = {}
+	for rprop, k in pairs(winning_keys) do
+		clean_attribs[k] = attribs[k] end
+
+	return clean_attribs, dynamic_attr
 end
 
 -- ——— builds ——————————————————————————————————————————
@@ -810,7 +833,7 @@ local function compile_func(code, indent, scope_var, statement, suffix, scope_lo
 		if #frag_scopecaptures > 0 then
 			append(lines, indent .. "        return {")
 			append(lines, indent .. "            key = key,")
-			append(lines, indent .. "            scope = capturedScope,")
+			append(lines, indent .. "            scope = setmetatable(capturedScope or {}, { __index = scope or {} }),")
 			append(lines, indent .. "        }")
 		else
 			append(lines, indent .. "        return key")
@@ -926,7 +949,7 @@ function compile_if(child, parent_var, depth, scope_var, scope_locals, current_c
 	local cond = child.props.__if
 	local cond_code = is_expr(cond) and cond.code or tostring(cond)
 
-	local selector_lines, selector_var = compile_func("(" .. cond_code .. ') and "cond_body" or nil', indent, scope_var, false, "cond_select", scope_locals)
+	local selector_lines, selector_var = compile_func("(" .. cond_code .. ') and { key = "cond_body", scope = scope } or nil', indent, scope_var, false, "cond_select", scope_locals)
 	local factories_table = alloc_name(child, "condFactories")
 	local lines = {}
 

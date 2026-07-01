@@ -321,6 +321,13 @@ function gcBindings()
 	computedBindings = live
 end
 
+function rerender()
+	for _, b in ipairs(luaBlockBindings) do updateLuaBlock(b) end
+	for _, b in ipairs(computedBindings) do updateComputed(b) end
+
+	if #computedBindings > 64 then gcBindings() end
+end
+
 function setState(key, value)
 	state[key] = value
 	app.state  = state
@@ -335,19 +342,32 @@ function setState(key, value)
 		end
 	end
 
-	for _, b in ipairs(luaBlockBindings) do updateLuaBlock(b) end
-	for _, b in ipairs(computedBindings) do updateComputed(b) end
+	rerender()
+end
 
-	if #computedBindings > 64 then gcBindings() end
+function notifyState(key)
+	setState(key, state[key])
 end
 
 -- ——— structure helpers ——————————————————————————————————
+
+local function serializeScope(scope)
+	if not scope then return "" end
+	local parts = {}
+
+	for k, v in pairs(scope) do
+		table.insert(parts, tostring(k) .. "=" .. tostring(v)) end
+
+	table.sort(parts)
+	return "{" .. table.concat(parts, ",") .. "}"
+end
 
 local function normalizeLuaBlockSelection(selected)
 	if selected == nil then return nil, nil end
 
 	if type(selected) == "table" and selected.key ~= nil then
-		return tostring(selected.key), { { key = tostring(selected.key), scope = selected.scope } }
+		local sig = tostring(selected.key) .. serializeScope(selected.scope)
+		return sig, { { key = tostring(selected.key), scope = selected.scope } }
 	end
 
 	if type(selected) == "table" then
@@ -356,8 +376,10 @@ local function normalizeLuaBlockSelection(selected)
 		for _, v in ipairs(selected) do
 			if v ~= nil then
 				local k = tostring(type(v) == "table" and v.key or v)
-				append(entries, { key = k, scope = type(v) == "table" and v.scope or nil })
-				append(parts, k)
+				local s = type(v) == "table" and v.scope or nil
+
+				append(entries, { key = k, scope = s })
+				append(parts, k .. serializeScope(s))
 			end
 		end
 		return #parts > 0 and table.concat(parts, "\0") or "", entries
@@ -386,8 +408,8 @@ end
 local function buildHandlerContext(instance, payload, scope, event)
 	return {
 		instance = instance, payload = payload, scope = scope, event = event,
-		state = state, setState = setState, dispatch = dispatch,
-		navigate = navigate, getById = getById
+		state = state, rerender = rerender, setState = setState, notifyState = notifyState,
+		dispatch = dispatch, navigate = navigate, getById = getById
 	}
 end
 
@@ -437,12 +459,15 @@ end
 
 if type(app.init) == "function" then
 	app.init({
-		state     = state,
-		setState  = setState,
-		dispatch  = dispatch,
-		navigate  = navigate,
-		getById   = getById,
-		onCleanup = function(cb) _cleanup_fn = cb end,
+		state       = state,
+		rerender    = rerender,
+		setState    = setState,
+		notifyState = notifyState,
+
+		dispatch    = dispatch,
+		navigate    = navigate,
+		getById     = getById,
+		onCleanup   = function(cb) _cleanup_fn = cb end,
 	})
 end
 
