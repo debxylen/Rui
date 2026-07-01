@@ -124,7 +124,23 @@ local PROP_SETTERS = {
 
 local LAYOUT_KEYS     = { direction = "direction", gap = "gap", padding = "padding", align = "align" }
 local TWEEN_KEYS      = { tweenTime = "time", tweenStyle = "style", tweenDirection = "direction" }
-local TRANSITION_KEYS = { transition = "preset", transitionTime = "time", transitionStyle = "style", transitionDirection = "direction" }
+
+local TRANSITION_KEYS = {
+	transition               = "preset",
+	transitionTime           = "time",
+	transitionStyle          = "style",
+	transitionDirection      = "direction",
+
+	transitionEnter          = "enterPreset",
+	transitionEnterTime      = "enterTime",
+	transitionEnterStyle     = "enterStyle",
+	transitionEnterDirection = "enterDirection",
+
+	transitionExit           = "exitPreset",
+	transitionExitTime       = "exitTime",
+	transitionExitStyle      = "exitStyle",
+	transitionExitDirection  = "exitDirection",
+}
 
 -- ——— stylesheets —————————————————————————————————————
 
@@ -835,13 +851,25 @@ local function compile_transition(node, var, indent)
 	local transition = node.props.__transition
 	if not transition then return {} end
 
-	local preset    = transition.preset or "fade"
-	local time      = transition.time or 0.22
-	local style     = transition.style or "Quad"
-	local direction = transition.direction or "Out"
+	local basePreset  = transition.preset
+	local enterPreset = transition.enterPreset or basePreset
+	local exitPreset  = transition.exitPreset  or basePreset
+
+	if not enterPreset and not exitPreset then
+		enterPreset, exitPreset = "fade", "fade" end
+
+	local function get_info(which)
+		if not which then return "nil" end
+		local t = transition[which .. "Time"]      or transition.time      or 0.22
+		local s = transition[which .. "Style"]     or transition.style     or "Quad"
+		local d = transition[which .. "Direction"] or transition.direction or "Out"
+		return "TweenInfo.new(" .. tostring(t) .. ", Enum.EasingStyle." .. s .. ", Enum.EasingDirection." .. d .. ")"
+	end
 
 	return {
-		indent .. "setTransitionInfo(" .. var .. ", " .. str(preset) .. ", TweenInfo.new(" .. tostring(time) .. ", Enum.EasingStyle." .. style .. ", Enum.EasingDirection." .. direction .. "))",
+		indent .. "setTransitionInfo(" .. var .. ", " ..
+			(enterPreset and str(enterPreset) or "nil") .. ", " .. get_info(enterPreset and "enter") .. ", " ..
+			(exitPreset and str(exitPreset) or "nil") .. ", " .. get_info(exitPreset and "exit") .. ")"
 	}
 end
 
@@ -1234,7 +1262,8 @@ function compile_node(node, depth, scope_var, scope_locals, current_component)
 		extend(lines, compile_computedprop(var, "Name", node.props.__runtimeName.code, indent, scope_var, scope_locals)) end
 
 	if node.type == "ScreenGui" then
-		append(lines, indent .. var .. ".ResetOnSpawn = false") end
+		append(lines, indent .. var .. ".ResetOnSpawn = false")
+		append(lines, indent .. var .. ".ZIndexBehavior = Enum.ZIndexBehavior.Sibling") end
 
 	for k, v in pairs(node.props) do
 		local dynKey = k

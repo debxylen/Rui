@@ -72,8 +72,11 @@ local function canTweenValue(value)
 	return t == "number" or t == "UDim2" or t == "UDim" or t == "Color3" or t == "Vector2" or t == "Vector3" or t == "CFrame"
 end
 
-function setTweenInfo(instance, info)        tweenInfos[instance] = info end
-function setTransitionInfo(instance, p, i)   transitionInfos[instance] = { preset = p, tweenInfo = i } end
+function setTweenInfo(instance, info)
+	tweenInfos[instance] = info end
+
+function setTransitionInfo(instance, enterPreset, enterInfo, exitPreset, exitInfo)
+	transitionInfos[instance] = { enterPreset = enterPreset, enterInfo = enterInfo, exitPreset = exitPreset, exitInfo = exitInfo } end
 
 local function tweenProperties(instance, tweenInfo, goals)
 	if not activeTweens[instance] then activeTweens[instance] = {} end
@@ -119,19 +122,13 @@ local function getTransitionGoals(instance, preset)
 	local okPos,  pos  = pcall(function() return instance.Position end)
 	local okGrp,  grp  = pcall(function() return instance.GroupTransparency end)
 
-	if (preset:match("^fade") and preset ~= "fadeOut") or preset == "modal" or preset == "toast" then
+	if preset and (preset:match("^fade") or preset == "modal" or preset == "toast") then
 		if okGrp 	  then setPair("GroupTransparency", grp, 1)
 		else
 			if okBg   then setPair("BackgroundTransparency", bg, 1) end
 			if okText then setPair("TextTransparency", text, 1) end end end
 
-	if preset == "fadeOut" then
-		if okGrp 	  then exit.GroupTransparency = 1
-		else
-			if okBg   then exit.BackgroundTransparency = 1 end
-			if okText then exit.TextTransparency = 1 end end
-
-	elseif preset == "slideUp" or preset == "fadeUp" or preset == "modal" then
+	if preset == "slideUp" or preset == "fadeUp" or preset == "modal" then
 		if okPos then setPair("Position", pos, UDim2.new(pos.X.Scale, pos.X.Offset, pos.Y.Scale + 0.04, pos.Y.Offset + 24)) end
 
 	elseif preset == "slideDown" or preset == "fadeDown" then
@@ -156,17 +153,30 @@ local function collectTransitionTargets(roots)
 	return targets
 end
 
--- fade all painted children alongside the root, cuz idk why it wont do that itself even in canvasgroup
-local function tweenDescendants(root, tweenInfo, alpha)
+-- ok so turns out all children dont get faded along even in canvasgroup, if ur not using ZIndexBehavior="Sibling"
+-- but we still keep this anyway
+local function tweenDescendants(root, tweenInfo, alpha, snapFrom)
 	local function visit(ins)
 		if not ins:IsA("GuiObject") then return end
 		local goals = {}
 
 		local okBg, _ = pcall(function() return ins.BackgroundTransparency end)
-		if okBg and ins.BackgroundTransparency < 1 then goals.BackgroundTransparency = alpha end
+		if okBg and ins.BackgroundTransparency < 1 then
+			local to = snapFrom and ins.BackgroundTransparency or alpha
+			if snapFrom then ins.BackgroundTransparency = snapFrom end
+			goals.BackgroundTransparency = to end
 
 		local okTx, _ = pcall(function() return ins.TextTransparency end)
-		if okTx then goals.TextTransparency = alpha end
+		if okTx and ins.TextTransparency < 1 then
+			local to = snapFrom and ins.TextTransparency or alpha
+			if snapFrom then ins.TextTransparency = snapFrom end
+			goals.TextTransparency = to end
+
+		local okImg, _ = pcall(function() return ins.ImageTransparency end)
+		if okImg and ins.ImageTransparency < 1 then
+			local to = snapFrom and ins.ImageTransparency or alpha
+			if snapFrom then ins.ImageTransparency = snapFrom end
+			goals.ImageTransparency = to end
 
 		if next(goals) then tweenProperties(ins, tweenInfo, goals) end
 		for _, c in ipairs(ins:GetChildren()) do visit(c) end
@@ -175,13 +185,18 @@ local function tweenDescendants(root, tweenInfo, alpha)
 end
 
 function playEnterTransitions(roots)
-	for _, ins in ipairs(collectTransitionTargets(roots)) do
-		local cfg         = transitionInfos[ins]
-		local enter, exit = getTransitionGoals(ins, cfg.preset)
-		if enter then
-			for p, start in pairs(exit) do ins[p] = start end
-			tweenProperties(ins, cfg.tweenInfo, enter)
-		end
+	for _, ins in ipairs(roots) do
+		local cfg = transitionInfos[ins]
+		if not cfg then continue end
+
+		local enter, exit = getTransitionGoals(ins, cfg.enterPreset)
+		if not enter then continue end
+
+		for p, start in pairs(exit) do ins[p] = start end
+		tweenProperties(ins, cfg.enterInfo, enter)
+
+		local isFade = cfg.enterPreset and (cfg.enterPreset:match("^fade") or cfg.enterPreset == "modal" or cfg.enterPreset == "toast")
+		if isFade then tweenDescendants(ins, cfg.enterInfo, 0, 1) end
 	end
 end
 
@@ -196,14 +211,14 @@ function playExitTransitions(roots, onDone)
 			exitingInstances[son] = true end
 
 		local cfg     = transitionInfos[ins]
-		local _, exit = getTransitionGoals(ins, cfg.preset)
+		local _, exit = getTransitionGoals(ins, cfg.exitPreset)
 
-		if next(exit) then
+		if exit and next(exit) then
 			played  = true
-			maxTime = math.max(maxTime, cfg.tweenInfo.Time)
-			tweenProperties(ins, cfg.tweenInfo, exit)
-			local isFade = cfg.preset:match("^fade") or cfg.preset == "modal" or cfg.preset == "toast"
-			if isFade then tweenDescendants(ins, cfg.tweenInfo, 1) end
+			maxTime = math.max(maxTime, cfg.exitInfo.Time)
+			tweenProperties(ins, cfg.exitInfo, exit)
+			local isFade = cfg.exitPreset and (cfg.exitPreset:match("^fade") or cfg.exitPreset == "modal" or cfg.exitPreset == "toast")
+			if isFade then tweenDescendants(ins, cfg.exitInfo, 1) end
 		end
 	end
 
@@ -479,6 +494,8 @@ function updateLuaBlock(binding)
 	end
 
 	binding.mounted = created
-	playEnterTransitions(binding.mounted)
+	task.defer(function()
+		if binding.revision == rev then playEnterTransitions(binding.mounted) end
+	end)
 end
 ]=]
