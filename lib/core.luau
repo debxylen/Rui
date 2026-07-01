@@ -296,6 +296,7 @@ local function parse_props(node)
 		elseif TRANSITION_KEYS[k] then transition[TRANSITION_KEYS[k]] = tonumber(v) or v
 
 		elseif EVENT_MAP[k]       then props[k]     = is_luaexpr(v) and parse_expr(v) or v
+		elseif k == "for"         then props.__for  = is_luaexpr(v) and parse_expr(v) or v
 		elseif k == "if"          then props.__if   = is_luaexpr(v) and parse_expr(v) or parse_bool(v)
 		elseif k == "id"          then props.__id   = v
 		elseif k == "name"        then
@@ -899,6 +900,7 @@ local compile_fragchilds
 local compile_node
 local group_comment
 local compile_if
+local compile_for
 local compile_dedupe
 -- / end forward declr
 
@@ -950,6 +952,70 @@ function compile_if(child, parent_var, depth, scope_var, scope_locals, current_c
 	return lines
 end
 
+function compile_for(child, parent_var, depth, scope_var, scope_locals, current_component)
+	local indent = string.rep("    ", depth)
+
+	local code = child.props.__for
+	code = is_expr(code) and code.code or tostring(code)
+
+	local i, j, list = string.match(code, "^%s*([%a_][%w_]*)%s*,%s*([%a_][%w_]*)%s+in%s+(.+)$")
+	local selector_code
+
+	if i then
+		selector_code   = "local out = {}\n"
+		selector_code ..= "for " .. i .. ", " .. j .. " in " .. list .. " do\n"
+		selector_code ..= "    table.insert(out, __fragment('loop_body', setmetatable({ " .. i .. " = " .. i .. ", " .. j .. " = " .. j .. " }, { __index = scope or {} })))\n"
+		selector_code ..= "end\n"
+		selector_code ..= "return out"
+
+	else
+		local i_, range = string.match(code, "^%s*([%a_][%w_]*)%s*=%s*(.+)$")
+		if not i_ then error("Invalid `for` syntax") else i = i_ end
+
+		selector_code   = "local out = {}\n"
+		selector_code ..= "for " .. i .. " = " .. range .. " do\n"
+		selector_code ..= "    table.insert(out, __fragment('loop_body', setmetatable({ " .. i .. " = " .. i .. " }, { __index = scope or {} })))\n"
+		selector_code ..= "end\n"
+		selector_code ..= "return out"
+	end
+
+	local lines = {}
+	local loop_locals = j and { i, j } or { i }
+
+	local selector_lines, selector_var = compile_func(selector_code, indent, scope_var, true, "for_select", scope_locals, loop_locals)
+	local factories_table = alloc_name(child, "forFactories")
+
+	extend(lines, selector_lines)
+	append(lines, indent .. "local " .. factories_table .. " = {}")
+	append(lines, indent .. factories_table .. '["loop_body"] = function(parent, fragmentScope)')
+
+	if scope_locals then
+		for _, name in ipairs(scope_locals) do
+			if name == i or name == j then continue end
+			table.insert(loop_locals, name) end end
+
+	local saved_for = child.props.__for
+	child.props.__for = nil
+
+	local child_lines, child_var = compile_node(child, depth + 1, "fragmentScope", loop_locals, current_component)
+	child.props.__for = saved_for
+
+	extend(lines, child_lines)
+
+	if parent_var == "rootParent" then
+		extend(lines, compile_dedupe(child_var .. ".Name", "parent", indent .. "    "))
+		append(lines, indent .. '    ' .. child_var .. ".Name = mountPrefix .. " .. child_var .. ".Name")
+	end
+
+	append(lines, indent .. "    " .. child_var .. ".Parent = parent")
+	append(lines, indent .. "    return {" .. child_var .. "}")
+	append(lines, indent .. "end")
+
+	append(lines, indent .. "bindLuaBlock(" .. parent_var .. ", " .. selector_var .. ", " .. factories_table .. ", " .. (scope_var or "nil") .. ")")
+
+	return lines
+end
+
 local function compile_child(parent_var, child, depth, scope_var, scope_locals, current_component)
 	local indent = string.rep("    ", depth)
 
@@ -961,8 +1027,9 @@ local function compile_child(parent_var, child, depth, scope_var, scope_locals, 
 		return lines
 	end
 
-	if child.type == "LuaBlock" 		then return compile_block(child, parent_var, depth, scope_var, scope_locals, current_component) end
-	if child.props and child.props.__if then return compile_if(child, parent_var, depth, scope_var, scope_locals, current_component) end
+	if child.type == "LuaBlock" 		 then return compile_block(child, parent_var, depth, scope_var, scope_locals, current_component) end
+	if child.props and child.props.__if  then return compile_if(child, parent_var, depth, scope_var, scope_locals, current_component) end
+	if child.props and child.props.__for then return compile_for(child, parent_var, depth, scope_var, scope_locals, current_component) end
 
 	local child_lines, child_var = compile_node(child, depth + 1, scope_var, scope_locals, current_component)
 	append(child_lines, indent .. child_var .. ".Parent = " .. parent_var)
@@ -1155,17 +1222,18 @@ function compile_fragchilds(fragment_src, depth, scope_var, scope_locals, curren
 	local roots         = {}
 	local lines         = {}
 
-	if fragment_tree.type == "Fragment" then
-		for _, child in ipairs(fragment_tree.children) do
-			local child_lines, child_var = compile_node(child, depth, scope_var, scope_locals, current_component)
-			extend(lines, child_lines)
-			append(roots, child_var)
-		end
-	else
-		local child_lines, child_var = compile_node(fragment_tree, depth, scope_var, scope_locals, current_component)
+	local function compile_rootchild(child)
+		local p = child.props
+		if p and p.__if  then extend(lines, compile_if(child, "parent", depth, scope_var, scope_locals, current_component)) return end
+		if p and p.__for then extend(lines, compile_for(child, "parent", depth, scope_var, scope_locals, current_component)) return end
+
+		local child_lines, child_var = compile_node(child, depth, scope_var, scope_locals, current_component)
 		extend(lines, child_lines)
 		append(roots, child_var)
 	end
+
+	local children = fragment_tree.type == "Fragment" and fragment_tree.children or { fragment_tree }
+	for _, child in ipairs(children) do compile_rootchild(child) end
 
 	return lines, roots
 end
@@ -1319,14 +1387,15 @@ end
 
 local isFirstRoot = true
 local function compile_root(node)
-	if node.props and node.props.__if then
+	if node.props and (node.props.__if or node.props.__for) then
 		if not node.props.__name then
-			error("Root nodes with if=... must have a static name=... so Rui can dedupe mounts") end
+			error("Root nodes with `if=...` or `for=...` must have a static `name=...` so Rui can dedupe mounts") end
 
 		local lines = {}
-
 		extend(lines, compile_dedupe(str(node.props.__name), "rootParent", ""))
-		extend(lines, compile_if(node, "rootParent", 0))
+
+		if     node.props.__if  then extend(lines, compile_if(node, "rootParent", 0))
+		elseif node.props.__for then extend(lines, compile_for(node, "rootParent", 0)) end
 
 		return lines, {}
 	end
@@ -1339,12 +1408,13 @@ local function compile_root(node)
 
 		for _, child in ipairs(node.children) do
 
-			if child.props and child.props.__if then
+			if child.props and (child.props.__if or child.props.__for) then
 				if not child.props.__name then
-					error("Root nodes with if=... must have a static name=... so Rui can dedupe mounts") end
+					error("Root nodes with `if=...` or `for=...` must have a static `name=...` so Rui can dedupe mounts") end
 
 				extend(lines, compile_dedupe(str(child.props.__name), "rootParent", ""))
-				extend(lines, compile_if(child, "rootParent", 0))
+				if     child.props.__if  then extend(lines, compile_if(child, "rootParent", 0))
+				elseif child.props.__for then extend(lines, compile_for(child, "rootParent", 0)) end
 
 			else
 				local child_lines, child_var = compile_node(child, 0)
